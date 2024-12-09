@@ -10,6 +10,7 @@ from sklearn.linear_model import LogisticRegression
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchattacks
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
@@ -82,6 +83,7 @@ class Trainer:
         self.build_data_loader()
         self.build_model()
         self.evaluator = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
+        self.evaluator_pgd = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
         self._writer = None
 
     def build_data_loader(self):
@@ -558,6 +560,8 @@ class Trainer:
             print(f"Evaluate on the test set")
             data_loader = self.test_loader
 
+        pgd10_attack = torchattacks.PGD(self.model, random_start=True)
+
         for batch in tqdm(data_loader, ascii=True):
             image = batch[0]
             label = batch[1]
@@ -567,23 +571,38 @@ class Trainer:
 
             _bsz, _ncrops, _c, _h, _w = image.size()
             image = image.view(_bsz * _ncrops, _c, _h, _w)
+            image_pgd = pgd10_attack(image, label)
+            image_pgd = image_pgd.view(_bsz * _ncrops, _c, _h, _w)
 
             if _ncrops <= 5:
                 output = self.model(image)
+                output_pgd = self.model(image_pgd)
                 output = output.view(_bsz, _ncrops, -1).mean(dim=1)
+                output_pgd = output_pgd.view(_bsz, _ncrops, -1).mean(dim=1)
             else:
                 # CUDA out of memory
                 output = []
+                output_pgd = []
                 image = image.view(_bsz, _ncrops, _c, _h, _w)
+                image_pgd = image_pgd.view(_bsz, _ncrops, _c, _h, _w)
                 for k in range(_ncrops):
                     output.append(self.model(image[:, k]))
+                    output.append(self.model(image_pgd[:, k]))
                 output = torch.stack(output).mean(dim=0)
+                output_pgd = torch.stack(output_pgd).mean(dim=0)
 
             self.evaluator.process(output, label)
+            self.evaluator_pgd.process(output_pgd, label)
 
         results = self.evaluator.evaluate()
+        results_pgd = self.evaluator_pgd.evaluate()
 
         for k, v in results.items():
+            tag = f"test/{k}"
+            if self._writer is not None:
+                self._writer.add_scalar(tag, v)
+
+        for k, v in results_pgd.items():
             tag = f"test/{k}"
             if self._writer is not None:
                 self._writer.add_scalar(tag, v)
