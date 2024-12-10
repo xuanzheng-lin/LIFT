@@ -448,7 +448,7 @@ class Trainer:
                 label = batch[1]
                 image = image.to(self.device)
                 label = label.to(self.device)
-                if cfg.pgd_attack:  # 添加配置项来控制是否进行PGD攻击
+                if cfg.pgd_attack_train:  # 添加配置项来控制是否进行PGD攻击
                     image = self.pgd_attack(self.model, image, label, epsilon=0.3, alpha=2/255, num_iter=20)
 
                 if cfg.prec == "amp":

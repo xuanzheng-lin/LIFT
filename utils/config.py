@@ -62,4 +62,4 @@ _C.test_only = False  # load model and test
 _C.test_train = False  # load model and test on the training set
 _C.model_dir = None
 
-_C.pgd_attack_train = False
+_C.pgd_attack_train = False # attack model during training
