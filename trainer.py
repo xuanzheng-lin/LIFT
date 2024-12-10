@@ -449,7 +449,7 @@ class Trainer:
                 image = image.to(self.device)
                 label = label.to(self.device)
                 if cfg.pgd_attack_train:  # 添加配置项来控制是否进行PGD攻击
-                    image = self.pgd_attack(self.model, image, label, epsilon=0.3, alpha=2/255, num_iter=20)
+                    image = self.pgd_attack(self.model, image, label, epsilon=0.3, alpha=2/255, num_iter=1)
 
                 if cfg.prec == "amp":
                     with autocast():
@@ -631,7 +631,7 @@ class Trainer:
         if head_dict["weight"].shape == self.head.weight.shape:
             self.head.load_state_dict(head_dict, strict=False)
 
-    def pgd_attack(model, images, labels, epsilon=0.3, alpha=2/255, num_iter=40):
+    def pgd_attack(self,model, images, labels, epsilon=0.3, alpha=2/255, num_iter=40):
         images = images.clone().detach().requires_grad_(True)
         for _ in range(num_iter):
             outputs = model(images)
