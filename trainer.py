@@ -571,7 +571,13 @@ class Trainer:
 
             _bsz, _ncrops, _c, _h, _w = image.size()
             image = image.view(_bsz * _ncrops, _c, _h, _w)
-            image_pgd = pgd10_attack(image, label)
+            
+           # **启用梯度模式**
+            with torch.enable_grad(): 
+                self.model.train()  # 必须将模型切换到训练模式以启用梯度
+                image_pgd = pgd10_attack(image, label)
+                self.model.eval()  # 恢复评估模式以避免其他影响
+
             image_pgd = image_pgd.view(_bsz * _ncrops, _c, _h, _w)
 
             if _ncrops <= 5:
