@@ -61,3 +61,5 @@ _C.zero_shot = False  # zero-shot CLIP (only for CLIP)
 _C.test_only = False  # load model and test
 _C.test_train = False  # load model and test on the training set
 _C.model_dir = None
+
+_C.test_attack = False 
