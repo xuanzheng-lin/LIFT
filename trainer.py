@@ -27,6 +27,7 @@ from utils.samplers import DownSampler
 from utils.losses import *
 from utils.evaluator import Evaluator
 from utils.templates import ZEROSHOT_TEMPLATES
+from utils.visualizer import PGDVisualizer
 
 
 def load_clip_to_cpu(backbone_name, prec):
@@ -419,7 +420,7 @@ class Trainer:
 
     def train(self):
         cfg = self.cfg
-
+        self.visualizer = PGDVisualizer(self.model, )
         # Initialize summary writer
         writer_dir = os.path.join(cfg.output_dir, "tensorboard")
         os.makedirs(writer_dir, exist_ok=True)
@@ -547,6 +548,7 @@ class Trainer:
 
     def test(self, mode="test"):
         cfg = self.cfg
+        # self.visualizer = PGDVisualizer(self.model, self.device)
 
         if self.tuner is not None:
             self.tuner.eval()
@@ -562,7 +564,7 @@ class Trainer:
             data_loader = self.test_loader
 
         if cfg.test_attack:
-            self.model = torchattacks.PGD(self.model, random_start=True, steps=5)
+            pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=2)
 
         for batch in tqdm(data_loader, ascii=True):
             image = batch[0]
@@ -575,14 +577,22 @@ class Trainer:
             image = image.view(_bsz * _ncrops, _c, _h, _w)
 
             if _ncrops <= 5:
-                output = self.model(image)
+                if cfg.test_attack:
+                    adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
+                    output = self.model(adv_image)
+                else:
+                    output = self.model(image)
                 output = output.view(_bsz, _ncrops, -1).mean(dim=1)
             else:
                 # CUDA out of memory
                 output = []
                 image = image.view(_bsz, _ncrops, _c, _h, _w)
                 for k in range(_ncrops):
-                    output.append(self.model(image[:, k]))
+                    if cfg.test_attack:
+                        adv_image = pgd_attack(image[:, k], label)
+                        output.append(self.model(adv_image))
+                    else:
+                        output.append(self.model(image[:, k]))
                 output = torch.stack(output).mean(dim=0)
 
             self.evaluator.process(output, label)
