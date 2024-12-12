@@ -420,7 +420,6 @@ class Trainer:
 
     def train(self):
         cfg = self.cfg
-        self.visualizer = PGDVisualizer(self.model, )
         # Initialize summary writer
         writer_dir = os.path.join(cfg.output_dir, "tensorboard")
         os.makedirs(writer_dir, exist_ok=True)
