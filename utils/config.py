@@ -62,4 +62,8 @@ _C.test_only = False  # load model and test
 _C.test_train = False  # load model and test on the training set
 _C.model_dir = None
 
-_C.test_attack = False 
+_C.test_attack = False
+_C.aa_on_test = False
+_C.interval = 2 
+_C.debug = 1
+_C.nowand = True
