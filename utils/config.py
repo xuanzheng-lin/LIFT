@@ -1,3 +1,4 @@
+from sympy import false
 from yacs.config import CfgNode as CN
 
 _C = CN()
@@ -64,6 +65,8 @@ _C.model_dir = None
 
 _C.test_attack = False
 _C.aa_on_test = False
-_C.interval = 2 
-_C.debug = 1
+_C.train_PGDAT = False
+_C.evaluate_interval = False
+_C.interval = 5 
+_C.debug = 0
 _C.nowand = True

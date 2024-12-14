@@ -450,25 +450,45 @@ class Trainer:
                 label = batch[1]
                 image = image.to(self.device)
                 label = label.to(self.device)
-
-                if cfg.prec == "amp":
-                    with autocast():
+                if not cfg.train_PGDAT:
+                    if cfg.prec == "amp":
+                        with autocast():
+                            output = self.model(image)
+                            loss = self.criterion(output, label)
+                            loss_micro = loss / self.accum_step
+                            self.scaler.scale(loss_micro).backward()
+                        if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
+                            self.scaler.step(self.optim)
+                            self.scaler.update()
+                            self.optim.zero_grad()
+                    else:
                         output = self.model(image)
                         loss = self.criterion(output, label)
                         loss_micro = loss / self.accum_step
-                        self.scaler.scale(loss_micro).backward()
-                    if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
-                        self.scaler.step(self.optim)
-                        self.scaler.update()
-                        self.optim.zero_grad()
+                        loss_micro.backward()
+                        if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
+                            self.optim.step()
+                            self.optim.zero_grad()
                 else:
-                    output = self.model(image)
-                    loss = self.criterion(output, label)
-                    loss_micro = loss / self.accum_step
-                    loss_micro.backward()
-                    if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
-                        self.optim.step()
-                        self.optim.zero_grad()
+                    adv_image = PGD(image, label, self.model, steps=2)
+                    if cfg.prec == "amp":
+                        with autocast():
+                            output = self.model(adv_image)
+                            loss = self.criterion(output, label)
+                            loss_micro = loss / self.accum_step
+                            self.scaler.scale(loss_micro).backward()
+                        if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
+                            self.scaler.step(self.optim)
+                            self.scaler.update()
+                            self.optim.zero_grad()
+                    else:
+                        output = self.model(adv_image)
+                        loss = self.criterion(output, label)
+                        loss_micro = loss / self.accum_step
+                        loss_micro.backward()
+                        if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
+                            self.optim.step()
+                            self.optim.zero_grad()
 
                 with torch.no_grad():
                     pred = output.argmax(dim=1)
@@ -528,22 +548,23 @@ class Trainer:
             self.sched.step()
             torch.cuda.empty_cache()
 
-            if epoch_idx % cfg.interval == 0 :
-                clean, rob, _ = evaluate_interval(self.model, self.test_loader, cfg, self.num_classes, wandb=None, epoch=epoch_idx)
-            if rob >= best_rob : 
-                best_epoch, best_clean, best_rob = epoch_idx, clean, rob
-                save_dir = os.path.join(cfg.output_dir, "bestcheckpoint") 
-                os.makedirs(save_dir, exist_ok=True)
-                best_save_fname = os.path.join(save_dir, time_start + 'total_epochs_{:d}_best.pt'.format(num_epochs))
-                if os.path.exists(best_save_fname):
-                    os.remove(best_save_fname)
-                torch.save(self.model.state_dict(),best_save_fname)
+            if cfg.evaluate_interval:
+                if epoch_idx % cfg.interval == 0 :
+                    clean, rob, _ = evaluate_interval(self.model, self.test_loader, cfg, self.num_classes, wandb=None, epoch=epoch_idx)
+                if rob >= best_rob : 
+                    best_epoch, best_clean, best_rob = epoch_idx, clean, rob
+                    save_dir = os.path.join(cfg.output_dir, "bestcheckpoint") 
+                    os.makedirs(save_dir, exist_ok=True)
+                    best_save_fname = os.path.join(save_dir, time_start + 'total_epochs_{:d}_best.pt'.format(num_epochs))
+                    if os.path.exists(best_save_fname):
+                        os.remove(best_save_fname)
+                    torch.save(self.model.state_dict(),best_save_fname)
 
-                info = []
-                info += [f"epoch {best_epoch} has best robustness now"]
-                info += [f"clean acc {best_clean:.4f}"]
-                info += [f"rob acc {best_rob:.4f}"]
-                print(" ".join(info))
+                    info = []
+                    info += [f"epoch {best_epoch} has best robustness now"]
+                    info += [f"clean acc {best_clean:.4f}"]
+                    info += [f"rob acc {best_rob:.4f}"]
+                    print(" ".join(info))
 
         print("Finish training")
         print("Note that the printed training acc is not precise.",
