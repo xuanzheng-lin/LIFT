@@ -25,7 +25,7 @@ from models import *
 from utils.meter import AverageMeter
 from utils.samplers import DownSampler
 from utils.losses import *
-from utils.evaluator import Evaluator
+from utils.evaluator import *
 from utils.templates import ZEROSHOT_TEMPLATES
 from utils.visualizer import PGDVisualizer
 
@@ -435,7 +435,8 @@ class Trainer:
 
         # Remember the starting time (for computing the elapsed time)
         time_start = time.time()
-
+        
+        best_rob = 0
         num_epochs = cfg.num_epochs
         for epoch_idx in range(num_epochs):
             self.tuner.train()
@@ -527,6 +528,23 @@ class Trainer:
             self.sched.step()
             torch.cuda.empty_cache()
 
+            if epoch_idx % cfg.interval == 0 :
+                clean, rob, _ = evaluate_interval(self.model, self.test_loader, cfg, self.num_classes, wandb=None, epoch=epoch_idx)
+            if rob >= best_rob : 
+                best_epoch, best_clean, best_rob = epoch_idx, clean, rob
+                save_dir = os.path.join(cfg.output_dir, "bestcheckpoint") 
+                os.makedirs(save_dir, exist_ok=True)
+                best_save_fname = os.path.join(save_dir, time_start + 'total_epochs_{:d}_best.pt'.format(num_epochs))
+                if os.path.exists(best_save_fname):
+                    os.remove(best_save_fname)
+                torch.save(self.model.state_dict(),best_save_fname)
+
+                info = []
+                info += [f"epoch {best_epoch} has best robustness now"]
+                info += [f"clean acc {best_clean:.4f}"]
+                info += [f"rob acc {best_rob:.4f}"]
+                print(" ".join(info))
+
         print("Finish training")
         print("Note that the printed training acc is not precise.",
               "To get precise training acc, use option ``test_train True``.")
@@ -561,6 +579,10 @@ class Trainer:
         elif mode == "test":
             print(f"Evaluate on the test set")
             data_loader = self.test_loader
+        
+        if cfg.aa_on_test:
+            AA_acc = evaluate_final_aa(self.model, data_loader)
+            print(f"AA acc on test set is {AA_acc}")
 
         if cfg.test_attack:
             pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=2)

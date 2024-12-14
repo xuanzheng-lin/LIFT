@@ -241,11 +241,15 @@ def evaluate_interval(model, test_loader, config, num_classes, wandb, epoch, pre
     for step,(X,y) in enumerate(test_loader):
         X = X.float().cuda()
         y = y.cuda()
-        inputs_adv = PGD(X, y, model, steps=2)
+        _bsz, _ncrops, _c, _h, _w = X.size()
+        X = X.view(_bsz * _ncrops, _c, _h, _w)
+        inputs_adv = PGD(X, y.repeat_interleave(_ncrops), model, steps=2)
         model.eval()
         with torch.no_grad():
             logits = model(X)
             logits_adv = model(inputs_adv)
+            logits = logits.view(_bsz, _ncrops, -1).mean(dim=1)
+            logits_adv = logits_adv.view(_bsz, _ncrops, -1).mean(dim=1)
 
             predictions_adv = np.argmax(logits_adv.cpu().detach().numpy(),axis=1)
             predictions_adv = predictions_adv - y.cpu().detach().numpy()
@@ -282,7 +286,7 @@ def evaluate_interval(model, test_loader, config, num_classes, wandb, epoch, pre
         else: 
             d2={'clean_acc': acc, 'robust_acc': rob,'main_epoch': epoch}
         
-        if config.num_classes == 100 : 
+        if num_classes == 100 : 
             for i, correct in enumerate(mean_class_correct):
                 d2[f'class{i}_acc'] = correct
             for i, correct_adv in enumerate(mean_class_correct_adv):
