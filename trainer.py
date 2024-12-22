@@ -487,8 +487,13 @@ class Trainer:
 
                     if cfg.prec == "amp":
                         with autocast():
-                            output = self.model(adv_image)
-                            loss = self.criterion(output, label)
+                            # 分别计算 clean 和 adv 样本的输出和 loss
+                            clean_output = self.model(adv_image[clean_indices])
+                            adv_output = self.model(adv_image[adv_indices])
+                            clean_loss = self.criterion(clean_output, label[clean_indices])
+                            adv_loss = self.criterion(adv_output, label[adv_indices])
+                            # 总 loss
+                            loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                             loss_micro = loss / self.accum_step
                             self.scaler.scale(loss_micro).backward()
                         if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
@@ -496,8 +501,11 @@ class Trainer:
                             self.scaler.update()
                             self.optim.zero_grad()
                     else:
-                        output = self.model(adv_image)
-                        loss = self.criterion(output, label)
+                        clean_output = self.model(adv_image[clean_indices])
+                        adv_output = self.model(adv_image[adv_indices])        
+                        clean_loss = self.criterion(clean_output, label[clean_indices])
+                        adv_loss = self.criterion(adv_output, label[adv_indices])
+                        loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                         loss_micro = loss / self.accum_step
                         loss_micro.backward()
                         if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
@@ -505,7 +513,10 @@ class Trainer:
                             self.optim.zero_grad()
 
                 with torch.no_grad():
-                    pred = output.argmax(dim=1)
+                    if not cfg.train_PGDAT:
+                        pred = output.argmax(dim=1)
+                    else:
+                        pred = torch.cat([clean_output, adv_output], dim=0).argmax(dim=1)
                     correct = pred.eq(label).float()
                     acc = correct.mean().mul_(100.0)
 
@@ -540,6 +551,7 @@ class Trainer:
                     info += [f"time {batch_time.val:.3f} ({batch_time.avg:.3f})"]
                     info += [f"data {data_time.val:.3f} ({data_time.avg:.3f})"]
                     info += [f"loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})"]
+                    info += [f"clean_loss {clean_loss.item():.4f} adv_loss {adv_loss.item():.4f}"]
                     info += [f"acc {acc_meter.val:.4f} ({acc_meter.avg:.4f})"]
                     info += [f"(mean {mean_acc:.4f} many {many_acc:.4f} med {med_acc:.4f} few {few_acc:.4f})"]
                     info += [f"lr {current_lr:.4e}"]
@@ -550,6 +562,8 @@ class Trainer:
                 self._writer.add_scalar("train/lr", current_lr, n_iter)
                 self._writer.add_scalar("train/loss.val", loss_meter.val, n_iter)
                 self._writer.add_scalar("train/loss.avg", loss_meter.avg, n_iter)
+                self._writer.add_scalar("train/loss.clean", clean_loss.item(), n_iter)
+                self._writer.add_scalar("train/loss.adv", adv_loss.item(), n_iter)
                 self._writer.add_scalar("train/acc.val", acc_meter.val, n_iter)
                 self._writer.add_scalar("train/acc.avg", acc_meter.avg, n_iter)
                 self._writer.add_scalar("train/mean_acc", mean_acc, n_iter)
