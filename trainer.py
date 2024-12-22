@@ -470,7 +470,21 @@ class Trainer:
                             self.optim.step()
                             self.optim.zero_grad()
                 else:
-                    adv_image = PGD(image, label, self.model, steps=2)
+                    # 划分 clean 和 adv 样本
+                    batch_size = image.size(0)
+                    attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例
+                    clean_size = batch_size - attack_size
+
+                    # 随机选择攻击样本的索引
+                    indices = torch.randperm(batch_size)
+                    adv_indices = indices[:attack_size]
+                    clean_indices = indices[attack_size:]
+
+                    # 初始化 adv_image，默认和原始 image 相同
+                    adv_image = image.clone()
+
+                    adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=2)
+
                     if cfg.prec == "amp":
                         with autocast():
                             output = self.model(adv_image)
