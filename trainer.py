@@ -490,8 +490,8 @@ class Trainer:
                     if cfg.prec == "amp":
                         with autocast():
                             # 分别计算 clean 和 adv 样本的输出和 loss
-                            clean_output = self.model(adv_image[clean_indices])
-                            adv_output = self.model(adv_image[adv_indices])
+                            clean_output = self.model(adv_image[clean_indices], attack_supervise="clean")
+                            adv_output = self.model(adv_image[adv_indices], attack_supervise="adv")
                             clean_loss = self.criterion(clean_output, label[clean_indices])
                             adv_loss = self.criterion(adv_output, label[adv_indices])
                             # 总 loss
@@ -503,8 +503,8 @@ class Trainer:
                             self.scaler.update()
                             self.optim.zero_grad()
                     else:
-                        clean_output = self.model(adv_image[clean_indices])
-                        adv_output = self.model(adv_image[adv_indices])        
+                        clean_output = self.model(adv_image[clean_indices], attack_supervise="clean")
+                        adv_output = self.model(adv_image[adv_indices], attack_supervise="adv")        
                         clean_loss = self.criterion(clean_output, label[clean_indices])
                         adv_loss = self.criterion(adv_output, label[adv_indices])
                         loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size

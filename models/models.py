@@ -67,10 +67,13 @@ class PeftModelFromCLIP(nn.Module):
             text_features = torch.cat([self.text_encoder(x) for x in text_split])
         return text_features
     
-    def forward(self, image, use_tuner=True, return_feature=False):
+    def forward(self, image, use_tuner=True, return_feature=False, attack_supervise=None):
         tuner = self.tuner if use_tuner else None
         head = self.head if not return_feature else None
-        return self.image_encoder(image, tuner, head)
+        if isinstance(self.image_encoder, Peft_ViT):
+            return self.image_encoder(image, tuner, head, attack_supervise)
+        else:
+            return self.image_encoder(image, tuner, head)
 
 
 class PeftModelFromViT(nn.Module):
@@ -85,7 +88,7 @@ class PeftModelFromViT(nn.Module):
         dtype = self.image_encoder.dtype
         self.head = eval(cfg.classifier)(feat_dim, num_classes, dtype, **cfg)
 
-    def forward(self, image, use_tuner=True, return_feature=False):
+    def forward(self, image, use_tuner=True, return_feature=False, attack_supervise=None):
         tuner = self.tuner if use_tuner else None
         head = self.head if not return_feature else None
-        return self.image_encoder(image, tuner, head)
+        return self.image_encoder(image, tuner, head, attack_supervise)

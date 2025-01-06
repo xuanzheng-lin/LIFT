@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import copy
 
 from clip.model import VisionTransformer as CLIP_ViT
 from timm.models.vision_transformer import VisionTransformer as ViT
@@ -243,7 +244,8 @@ class ViT_Tuner(nn.Module):
         self.ln_tuned = ln_tuned
         self.vpt_list = vpt_list
         self.adapter_list = adapter_list
-        self.adaptformer_list = adaptformer_list
+        self.adaptformer_list_clean = copy.deepcopy(adaptformer_list)
+        self.adaptformer_list_adv = copy.deepcopy(adaptformer_list)
         self.lora_list = lora_list
         self.lora_mlp_list = lora_mlp_list
         self.ssf_attn_list = ssf_attn_list
@@ -258,12 +260,12 @@ class Peft_ViT(nn.Module):
 
         if isinstance(vit_model, CLIP_ViT):
             self.backbone = "CLIP-VIT"
-            self.patch_embedding = vit_model.conv1
-            self.class_embedding = vit_model.class_embedding
-            self.positional_embedding = vit_model.positional_embedding
-            self.ln_pre = vit_model.ln_pre
-            self.blocks = vit_model.transformer.resblocks
-            self.ln_post = vit_model.ln_post
+            self.patch_embedding = vit_model.conv1                      # 通过卷积操作将输入图像转为嵌入
+            self.class_embedding = vit_model.class_embedding            # 用于全局特征提取的特殊 token (class_token)
+            self.positional_embedding = vit_model.positional_embedding  # 位置编码，用于序列建模
+            self.ln_pre = vit_model.ln_pre                              # 归一化层，对输入进行归一化
+            self.blocks = vit_model.transformer.resblocks               # 模型的核心部分，包含多个自注意力和 MLP 层
+            self.ln_post = vit_model.ln_post                            # 归一化层，对输出进行归一化
             self.proj = vit_model.proj  # not used
             self.out_dim = self.ln_post.bias.shape[0]
             # self.out_dim = self.proj.shape[1]
@@ -283,9 +285,9 @@ class Peft_ViT(nn.Module):
     def dtype(self):
         return self.patch_embedding.weight.dtype
 
-    def forward(self, x, tuner=None, head=None):
+    def forward(self, x, tuner=None, head=None, attack_supervise=None):
         x = x.to(self.dtype)
-        x = self.patch_embedding(x)  # shape = [*, width, grid, grid]
+        x = self.patch_embedding(x)  # shape = [*, width(embedding_dim), grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
         x = torch.cat([self.class_embedding.to(x.dtype).expand(x.shape[0], 1, -1), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
@@ -304,7 +306,8 @@ class Peft_ViT(nn.Module):
             if tuner is not None:
                 vpt = tuner.vpt_list[i]
                 adapter = tuner.adapter_list[i]
-                adaptformer = tuner.adaptformer_list[i]
+                adaptformer_clean = tuner.adaptformer_list_clean[i]
+                adaptformer_adv = tuner.adaptformer_list_adv[i]
                 lora = tuner.lora_list[i]
                 lora_mlp = tuner.lora_mlp_list[i]
                 ssf_attn = tuner.ssf_attn_list[i]
@@ -312,7 +315,7 @@ class Peft_ViT(nn.Module):
                 ssf_ln = tuner.ssf_ln_list[i]
                 masked_linear = tuner.masked_linear_list[i]
             else:
-                vpt = adapter = adaptformer = lora = lora_mlp = ssf_attn = ssf_mlp = ssf_ln = masked_linear = None
+                vpt = adapter = adaptformer_clean = adaptformer_adv = lora = lora_mlp = ssf_attn = ssf_mlp = ssf_ln = masked_linear = None
 
             if vpt is not None:
                 x = vpt(x)
@@ -447,8 +450,14 @@ class Peft_ViT(nn.Module):
             if adapter is not None:
                 x = x + adapter(x)
             
-            if adaptformer is not None:
-                x = x + adaptformer(identity)
+            if adaptformer_clean or adaptformer_adv is not None:
+                if attack_supervise == "clean":
+                    x = x + adaptformer_clean(identity)
+                elif attack_supervise == "adv":
+                    x = x + adaptformer_adv(identity)
+                elif attack_supervise is None:
+                    x = x + adaptformer_clean(identity)
+                   # 测试集上需要一个路由来检测
             
             x = x + identity
             
