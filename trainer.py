@@ -41,6 +41,7 @@ def load_clip_to_cpu(backbone_name, prec):
         state_dict = None
 
     except RuntimeError:
+        # if error, try state_dict format
         state_dict = torch.load(model_path, map_location="cpu").eval()
 
     model = clip.build_model(state_dict or model.state_dict())
@@ -190,6 +191,7 @@ class Trainer:
             batch_size=64, shuffle=False,
             num_workers=cfg.num_workers, pin_memory=True)
         
+        # 梯度累计方法训练大批量数据，计算梯度累计步数
         assert cfg.batch_size % cfg.micro_batch_size == 0
         self.accum_step = cfg.batch_size // cfg.micro_batch_size
 
