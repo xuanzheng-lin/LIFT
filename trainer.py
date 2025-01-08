@@ -485,7 +485,7 @@ class Trainer:
                     # 初始化 adv_image，默认和原始 image 相同
                     adv_image = image.clone()
 
-                    adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=2)
+                    adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=10)
 
                     if cfg.prec == "amp":
                         with autocast():
@@ -517,9 +517,10 @@ class Trainer:
                 with torch.no_grad():
                     if not cfg.train_PGDAT:
                         pred = output.argmax(dim=1)
+                        correct = pred.eq(label).float()
                     else:
                         pred = torch.cat([clean_output, adv_output], dim=0).argmax(dim=1)
-                    correct = pred.eq(label).float()
+                        correct = pred.eq(torch.cat([label[clean_indices], label[adv_indices]], dim=0)).float()
                     acc = correct.mean().mul_(100.0)
 
                 current_lr = self.optim.param_groups[0]["lr"]
@@ -636,7 +637,7 @@ class Trainer:
             print(f"AA acc on test set is {AA_acc}")
 
         if cfg.test_attack:
-            pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=2)
+            pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=5)
 
         for batch in tqdm(data_loader, ascii=True):
             image = batch[0]
@@ -651,7 +652,7 @@ class Trainer:
             if _ncrops <= 5:
                 if cfg.test_attack:
                     adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
-                    output = self.model(adv_image)
+                    output = self.model(adv_image, attack_supervise="adv")
                 else:
                     output = self.model(image)
                 output = output.view(_bsz, _ncrops, -1).mean(dim=1)
@@ -662,7 +663,7 @@ class Trainer:
                 for k in range(_ncrops):
                     if cfg.test_attack:
                         adv_image = pgd_attack(image[:, k], label)
-                        output.append(self.model(adv_image))
+                        output.append(self.model(adv_image, attack_supervise="adv"))
                     else:
                         output.append(self.model(image[:, k]))
                 output = torch.stack(output).mean(dim=0)
