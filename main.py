@@ -76,6 +76,14 @@ def main(args):
         trainer.load_model(cfg.model_dir)
         trainer.test()
         return
+    
+    if cfg.post_train == True:
+        if cfg.model_dir is None:
+            cfg.model_dir = cfg.output_dir[:cfg.output_dir.index("_post_train_True")]
+            print("Model directory: {}".format(cfg.model_dir))
+        
+        trainer.load_model(cfg.model_dir)
+        trainer.post_train()
 
     trainer.train()
 

@@ -28,6 +28,7 @@ from utils.losses import *
 from utils.evaluator import *
 from utils.templates import ZEROSHOT_TEMPLATES
 from utils.visualizer import PGDVisualizer
+from models.routing import Routing
 
 
 def load_clip_to_cpu(backbone_name, prec):
@@ -614,6 +615,146 @@ class Trainer:
         # Close writer
         self._writer.close()
 
+    def post_train(self):
+        cfg = self.cfg
+        # Initialize summary writer
+        writer_dir = os.path.join(cfg.output_dir, "tensorboard")
+        os.makedirs(writer_dir, exist_ok=True)
+        print(f"Initialize tensorboard (log_dir={writer_dir})")
+        self._writer = SummaryWriter(log_dir=writer_dir)
+        # freeze finetuned CLIP model 
+        if self.tuner is not None:
+            self.tuner.eval()
+        if self.head is not None:
+            self.head.eval()
+        self.model.eval()
+        self.evaluator.reset()
+        
+        self.routing = Routing(cfg, self.model, 2)
+
+        # Initialize average meters
+        batch_time = AverageMeter()
+        data_time = AverageMeter()
+        loss_meter = AverageMeter(ema=True)
+
+        # Remember the starting time (for computing the elapsed time)
+        time_start = time.time()
+        
+        num_epochs = 3
+        for epoch_idx in range(num_epochs):
+            end = time.time()
+
+            num_batches = len(self.train_loader)
+            for batch_idx, batch in enumerate(self.train_loader):
+                data_time.update(time.time() - end)
+
+                image = batch[0]
+                label = batch[1]
+                image = image.to(self.device)
+                label = label.to(self.device)
+
+                # 划分 clean 和 adv 样本
+                batch_size = image.size(0)
+                attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例
+                clean_size = batch_size - attack_size
+
+                # 随机选择攻击样本的索引
+                indices = torch.randperm(batch_size)
+                adv_indices = indices[:attack_size]
+                clean_indices = indices[attack_size:]
+
+                # 初始化 adv_image，默认和原始 image 相同
+                adv_image = image.clone()
+
+                adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=10)
+                self.model.eval()
+
+                if cfg.prec == "amp":
+                    with autocast():
+                        # 分别计算 clean 和 adv 样本的输出和 loss
+                        clean_output = self.routing(adv_image[clean_indices])
+                        adv_output = self.routing(adv_image[adv_indices])
+                        clean_loss = nn.BCELoss(clean_output, torch.zeros(clean_output.shape[0]))
+                        adv_loss = nn.BCELoss(adv_output, torch.ones(adv_output.shape[0]))
+                        # 总 loss
+                        loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
+                        loss_micro = loss / self.accum_step
+                        self.scaler.scale(loss_micro).backward()
+                    if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
+                        self.scaler.step(self.optim)
+                        self.scaler.update()
+                        self.optim.zero_grad()
+                else:
+                    clean_output = self.routing(adv_image[clean_indices])
+                    adv_output = self.routing(adv_image[adv_indices])
+                    clean_loss = nn.BCELoss(clean_output, torch.zeros(clean_output.shape[0]))
+                    adv_loss = nn.BCELoss(adv_output, torch.ones(adv_output.shape[0]))
+                    loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
+                    loss_micro = loss / self.accum_step
+                    loss_micro.backward()
+                    if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
+                        self.optim.step()
+                        self.optim.zero_grad()
+
+                with torch.no_grad():
+                    combined_output = torch.cat((clean_output, adv_output), dim=0)
+                    pred = (combined_output > 0.5).int()
+                    correct = pred.eq(torch.cat([torch.zeros(clean_output.shape[0]), torch.ones(adv_output.shape[0])], dim=0)).int()
+
+                acc = correct.sum().item() / correct.numel()
+                current_lr = self.optim.param_groups[0]["lr"]
+                loss_meter.update(loss.item())
+                batch_time.update(time.time() - end)
+
+                meet_freq = (batch_idx + 1) % cfg.print_freq == 0
+                only_few_batches = num_batches < cfg.print_freq
+                if meet_freq or only_few_batches:
+                    nb_remain = 0
+                    nb_remain += num_batches - batch_idx - 1
+                    nb_remain += (
+                        num_epochs - epoch_idx - 1
+                    ) * num_batches
+                    eta_seconds = batch_time.avg * nb_remain
+                    eta = str(datetime.timedelta(seconds=int(eta_seconds)))
+
+                    info = []
+                    info += [f"epoch [{epoch_idx + 1}/{num_epochs}]"]
+                    info += [f"batch [{batch_idx + 1}/{num_batches}]"]
+                    info += [f"time {batch_time.val:.3f} ({batch_time.avg:.3f})"]
+                    info += [f"data {data_time.val:.3f} ({data_time.avg:.3f})"]
+                    info += [f"loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})"]
+                    info += [f"clean_loss {clean_loss.item():.4f} adv_loss {adv_loss.item():.4f}"]
+                    info += [f"acc {acc:.4e}"]
+                    info += [f"lr {current_lr:.4e}"]
+                    info += [f"eta {eta}"]
+                    print(" ".join(info))
+
+                n_iter = epoch_idx * num_batches + batch_idx
+                self._writer.add_scalar("train/lr", current_lr, n_iter)
+                self._writer.add_scalar("train/loss.val", loss_meter.val, n_iter)
+                self._writer.add_scalar("train/loss.avg", loss_meter.avg, n_iter)
+                self._writer.add_scalar("train/loss.clean", clean_loss.item(), n_iter)
+                self._writer.add_scalar("train/loss.adv", adv_loss.item(), n_iter)
+                
+                end = time.time()
+
+            self.sched.step()
+            torch.cuda.empty_cache()
+
+        print("Finish training")
+        print("Note that the printed training acc is not precise.",
+              "To get precise training acc, use option ``test_train True``.")
+
+        # show elapsed time
+        elapsed = round(time.time() - time_start)
+        elapsed = str(datetime.timedelta(seconds=elapsed))
+        print(f"Time elapsed: {elapsed}")
+
+        # save model
+        self.save_routing_model(cfg.output_dir)
+
+        # Close writer
+        self._writer.close()
 
     def test(self, mode="test"):
         cfg = self.cfg
@@ -717,3 +858,8 @@ class Trainer:
 
         if head_dict["weight"].shape == self.head.weight.shape:
             self.head.load_state_dict(head_dict, strict=False)
+
+    def save_routing_model(self, directory):
+        save_path = os.path.join(directory, "checkpoint.pth.tar")
+        torch.save(self.routing.state_dict(), save_path)
+        print(f"Checkpoint saved to {save_path}")

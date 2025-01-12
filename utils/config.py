@@ -66,6 +66,7 @@ _C.model_dir = None
 _C.test_attack = False
 _C.aa_on_test = False
 _C.train_PGDAT = False
+_C.post_train = False
 _C.attack_ratio = 0.5
 _C.evaluate_interval = False
 _C.interval = 5 
