@@ -19,11 +19,11 @@ class Routing(nn.Module):
             nn.Linear(input_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 1),
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
         self.model = finetuned_clip_model
 
-    def make_noise(self, x_batch, y_batch, spread):
+    def make_noise(self, x_batch,spread):
         new_x_batch = []
         for x in x_batch:
             x = x.data.cpu().numpy()
@@ -36,7 +36,7 @@ class Routing(nn.Module):
         new_batch = torch.stack(new_x_batch).to(self.device)
         return new_batch
 
-    def calculate_attribution_difference(self, model, inputs, noisy_inputs, target_label=None):
+    def calculate_attribution_difference(self, inputs, noisy_inputs, target_label=None):
         """
         计算特征归因差异, 使用Integrated Gradients方法。
         
@@ -49,7 +49,7 @@ class Routing(nn.Module):
         返回:
         - 特征归因差异 (batch_size,)
         """
-        ig = IntegratedGradients(self.model())
+        ig = IntegratedGradients(self.model)
         
         # 计算原始输入的特征归因
         attributions_original = ig.attribute(inputs, target=target_label)
@@ -71,18 +71,19 @@ class Routing(nn.Module):
         noisy_inputs = self.make_noise(inputs, spread=spread)
         
         # 提取logits（模型已微调）
-        logits_original = self.model(inputs, head=None)
-        logits_noisy = self.model(noisy_inputs, head=None)
+        logits_original = self.model(inputs, return_feature=True)
+        logits_noisy = self.model(noisy_inputs, return_feature=True)
         
         # Logits差异
         logits_diff = torch.norm(logits_original - logits_noisy, p=2, dim=1)
         
         # 特征归因差异
-        attribution_diff = self.calculate_attribution_difference(self.model, inputs, noisy_inputs, target_label)
+        attribution_diff = self.calculate_attribution_difference(inputs, noisy_inputs, target_label)
         
         # 返回特征向量
         return torch.stack([logits_diff, attribution_diff], dim=1)  # [batch_size, 2]
 
     def forward(self, images, labels=None, spread=0.35):
         features = self.extract_features_for_routing(images, spread, labels)
+        features = features.to(self.fc[0].weight.dtype)
         return self.fc(features).squeeze()  # 输出对应概率

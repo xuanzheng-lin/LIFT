@@ -631,6 +631,10 @@ class Trainer:
         self.evaluator.reset()
         
         self.routing = Routing(cfg, self.model, 2)
+        self.routing.to(self.device)
+
+        self.optim = torch.optim.SGD([{"params": self.routing.parameters()}],
+                                      lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
 
         # Initialize average meters
         batch_time = AverageMeter()
@@ -640,7 +644,7 @@ class Trainer:
         # Remember the starting time (for computing the elapsed time)
         time_start = time.time()
         
-        num_epochs = 3
+        num_epochs = 1
         for epoch_idx in range(num_epochs):
             end = time.time()
 
@@ -672,10 +676,11 @@ class Trainer:
                 if cfg.prec == "amp":
                     with autocast():
                         # 分别计算 clean 和 adv 样本的输出和 loss
-                        clean_output = self.routing(adv_image[clean_indices])
-                        adv_output = self.routing(adv_image[adv_indices])
-                        clean_loss = nn.BCELoss(clean_output, torch.zeros(clean_output.shape[0]))
-                        adv_loss = nn.BCELoss(adv_output, torch.ones(adv_output.shape[0]))
+                        clean_output = self.routing(adv_image[clean_indices], label[clean_indices])
+                        adv_output = self.routing(adv_image[adv_indices], label[adv_indices])
+                        bce_loss_fn = nn.BCEWithLogitsLoss()
+                        clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
+                        adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
                         # 总 loss
                         loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                         loss_micro = loss / self.accum_step
@@ -685,10 +690,11 @@ class Trainer:
                         self.scaler.update()
                         self.optim.zero_grad()
                 else:
-                    clean_output = self.routing(adv_image[clean_indices])
-                    adv_output = self.routing(adv_image[adv_indices])
-                    clean_loss = nn.BCELoss(clean_output, torch.zeros(clean_output.shape[0]))
-                    adv_loss = nn.BCELoss(adv_output, torch.ones(adv_output.shape[0]))
+                    clean_output = self.routing(adv_image[clean_indices], label[clean_indices])
+                    adv_output = self.routing(adv_image[adv_indices], label[adv_indices])
+                    bce_loss_fn = nn.BCEWithLogitsLoss()
+                    clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
+                    adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
                     loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                     loss_micro = loss / self.accum_step
                     loss_micro.backward()
@@ -699,7 +705,7 @@ class Trainer:
                 with torch.no_grad():
                     combined_output = torch.cat((clean_output, adv_output), dim=0)
                     pred = (combined_output > 0.5).int()
-                    correct = pred.eq(torch.cat([torch.zeros(clean_output.shape[0]), torch.ones(adv_output.shape[0])], dim=0)).int()
+                    correct = pred.eq(torch.cat([torch.zeros(clean_output.shape[0], device=pred.device), torch.ones(adv_output.shape[0], device=pred.device)], dim=0)).int()
 
                 acc = correct.sum().item() / correct.numel()
                 current_lr = self.optim.param_groups[0]["lr"]
@@ -737,6 +743,8 @@ class Trainer:
                 self._writer.add_scalar("train/loss.adv", adv_loss.item(), n_iter)
                 
                 end = time.time()
+                if batch_idx + 1 == 200:
+                    break
 
             self.sched.step()
             torch.cuda.empty_cache()
@@ -764,6 +772,7 @@ class Trainer:
             self.tuner.eval()
         if self.head is not None:
             self.head.eval()
+        self.routing.eval()
         self.evaluator.reset()
 
         if mode == "train":
@@ -863,3 +872,13 @@ class Trainer:
         save_path = os.path.join(directory, "checkpoint.pth.tar")
         torch.save(self.routing.state_dict(), save_path)
         print(f"Checkpoint saved to {save_path}")
+
+    def load_routing_model(self, directory):
+        load_path = os.path.join(directory, "checkpoint.pth.tar")
+
+        if not os.path.exists(load_path):
+            raise FileNotFoundError('Checkpoint not found at "{}"'.format(load_path))
+        state_dict = torch.load(load_path, map_location=self.device)
+        print("Loading weights to from {}".format(load_path))
+        self.routing.load_state_dict(state_dict, strict=True)
+
