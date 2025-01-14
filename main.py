@@ -74,7 +74,8 @@ def main(args):
             print("Model directory: {}".format(cfg.model_dir))
         
         trainer.load_model(cfg.model_dir)
-        trainer.load_routing_model("LIFT/output/imagenet_lt_clip_vit_b16_adaptformer_True_train_PGDAT_True_post_train_True")
+        if cfg.use_routing:
+            trainer.load_routing_model("./output/imagenet_lt_clip_vit_b16_adaptformer_True_train_PGDAT_True_post_train_True")
         trainer.test()
         return
     

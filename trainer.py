@@ -772,7 +772,8 @@ class Trainer:
             self.tuner.eval()
         if self.head is not None:
             self.head.eval()
-        self.routing.eval()
+        if self.routing is not None:
+            self.routing.eval()
         self.evaluator.reset()
 
         if mode == "train":
@@ -787,7 +788,7 @@ class Trainer:
             print(f"AA acc on test set is {AA_acc}")
 
         if cfg.test_attack:
-            pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=5)
+            pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=10)
 
         for batch in tqdm(data_loader, ascii=True):
             image = batch[0]
@@ -802,7 +803,21 @@ class Trainer:
             if _ncrops <= 5:
                 if cfg.test_attack:
                     adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
-                    output = self.model(adv_image, attack_supervise="adv")
+                    if cfg.use_routing:
+                        original_indices = torch.arange(adv_image.size(0), device=self.device)
+                        attack_prob = self.routing(adv_image)
+                        is_attacked = attack_prob > 0.5
+                        attacked_indices = original_indices[is_attacked]
+                        clean_indices = original_indices[~is_attacked]
+                        attack_image = adv_image[is_attacked]
+                        clean_image = adv_image[~is_attacked]
+                        attack_output = self.model(attack_image, attack_supervise="adv")
+                        clean_output = self.model(clean_image, attack_supervise="clean")
+                        output = torch.zeros_like(adv_image.size(0), attack_output.size(-1), device=self.device)  # 初始化完整 output 张量
+                        output[attacked_indices] = attack_output
+                        output[clean_indices] = clean_output
+                    else:
+                        output = self.model(adv_image, attack_supervise="adv")
                 else:
                     output = self.model(image)
                 output = output.view(_bsz, _ncrops, -1).mean(dim=1)
