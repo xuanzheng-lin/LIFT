@@ -790,6 +790,9 @@ class Trainer:
         if cfg.test_attack:
             pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=10)
 
+        total_attacked_count = 0
+        routing_correct_count = 0
+
         for batch in tqdm(data_loader, ascii=True):
             image = batch[0]
             label = batch[1]
@@ -802,6 +805,14 @@ class Trainer:
 
             if _ncrops <= 5:
                 if cfg.test_attack:
+                    # 划分 clean 和 adv 样本
+                    batch_size = image.size(0)
+                    attack_mask = torch.rand(batch_size, device=self.device) < cfg.attack_ratio
+                    adv_image = image.clone()
+                    adv_image[attack_mask] = pgd_attack(image[attack_mask], label.repeat_interleave(_ncrops)[attack_mask])
+
+                    # 初始化 adv_image，默认和原始 image 相同
+                    adv_image = image.clone()
                     adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
                     if cfg.use_routing:
                         original_indices = torch.arange(adv_image.size(0), device=self.device)
@@ -816,6 +827,10 @@ class Trainer:
                         output = torch.zeros_like(adv_image.size(0), attack_output.size(-1), device=self.device)  # 初始化完整 output 张量
                         output[attacked_indices] = attack_output
                         output[clean_indices] = clean_output
+
+                        # 更新计数器
+                        total_attacked_count += attack_mask.sum().item()
+                        routing_correct_count += ((is_attacked == attack_mask).sum().item())
                     else:
                         output = self.model(adv_image, attack_supervise="adv")
                 else:
@@ -836,6 +851,9 @@ class Trainer:
             self.evaluator.process(output, label)
 
         results = self.evaluator.evaluate()
+        
+        print(f"Total attacked images: {total_attacked_count}")
+        print(f"Routing correct classifications: {routing_correct_count}")
 
         for k, v in results.items():
             tag = f"test/{k}"
