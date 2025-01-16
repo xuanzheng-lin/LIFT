@@ -1,8 +1,12 @@
+from math import inf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from captum.attr import IntegratedGradients
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
 
 class Routing(nn.Module):
     def __init__(self, cfg, finetuned_clip_model, input_dim):
@@ -58,7 +62,7 @@ class Routing(nn.Module):
         attributions_noisy = ig.attribute(noisy_inputs, target=target_label)
         
         # 计算归因差异 (L2范数或者绝对差值)
-        attribution_diff = torch.norm(attributions_original - attributions_noisy, p=2, dim=(1, 2, 3))
+        attribution_diff = torch.norm(attributions_original - attributions_noisy, p=inf, dim=(1, 2, 3))
         return attribution_diff
 
     def extract_features_for_routing(self, inputs, spread, target_label=None):
@@ -75,7 +79,7 @@ class Routing(nn.Module):
         logits_noisy = self.model(noisy_inputs, return_feature=True)
         
         # Logits差异
-        logits_diff = torch.norm(logits_original - logits_noisy, p=2, dim=1)
+        logits_diff = torch.norm(logits_original - logits_noisy, p=inf, dim=1)
         
         # 特征归因差异
         attribution_diff = self.calculate_attribution_difference(inputs, noisy_inputs, target_label)
@@ -86,4 +90,41 @@ class Routing(nn.Module):
     def forward(self, images, labels=None, spread=0.35):
         features = self.extract_features_for_routing(images, spread, labels)
         features = features.to(self.fc[0].weight.dtype)
-        return self.fc(features).squeeze()  # 输出对应概率
+        return features, self.fc(features).squeeze()  # 输出对应概率
+    
+    def visualize_diff(self, logits_diff_clean, logits_diff_adv, attribution_diff_clean, attribution_diff_adv, directory=None):
+        """
+        可视化干净样本和对抗样本在高斯噪声下的logits差异和特征归因差异
+        
+        参数:
+        logits_diff_clean: 干净样本的logits差异
+        logits_diff_adv: 对抗样本的logits差异
+        attribution_diff_clean: 干净样本的特征归因差异
+        attribution_diff_adv: 对抗样本的特征归因差异
+        """
+        # 创建一个新的图形
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        
+        # 绘制logits差异的分布
+        axes[0].hist(logits_diff_clean, bins=30, alpha=0.5, label='Clean Samples', color='blue')
+        axes[0].hist(logits_diff_adv, bins=30, alpha=0.5, label='Adversarial Samples', color='red')
+        axes[0].set_title('Logits Difference Distribution')
+        axes[0].set_xlabel('Logits Difference')
+        axes[0].set_ylabel('Frequency')
+        axes[0].legend()
+        
+        # 绘制特征归因差异的分布
+        axes[1].hist(attribution_diff_clean, bins=30, alpha=0.5, label='Clean Samples', color='blue')
+        axes[1].hist(attribution_diff_adv, bins=30, alpha=0.5, label='Adversarial Samples', color='red')
+        axes[1].set_title('Attribution Difference Distribution')
+        axes[1].set_xlabel('Attribution Difference')
+        axes[1].set_ylabel('Frequency')
+        axes[1].legend()
+        
+        # 显示图形
+        plt.tight_layout()
+        if directory:
+            save_path = os.path.join(directory, "diff_plot.png")
+            plt.savefig(save_path)
+            print(f"图片已保存至: {save_path}")
+        plt.show()
