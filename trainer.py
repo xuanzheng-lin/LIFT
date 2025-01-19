@@ -87,6 +87,8 @@ class Trainer:
         self.build_model()
         self.evaluator = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
         self._writer = None
+        self.routing = Routing(cfg, self.model, 2)
+        self.routing.to(self.device)
 
     def build_data_loader(self):
         cfg = self.cfg
@@ -629,9 +631,6 @@ class Trainer:
             self.head.eval()
         self.model.eval()
         self.evaluator.reset()
-        
-        self.routing = Routing(cfg, self.model, 2)
-        self.routing.to(self.device)
 
         self.optim = torch.optim.SGD([{"params": self.routing.parameters()}],
                                       lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
@@ -914,7 +913,7 @@ class Trainer:
 
     def save_routing_model(self, directory):
         save_path = os.path.join(directory, "checkpoint.pth.tar")
-        torch.save(self.routing.state_dict(), save_path)
+        torch.save(self.routing.fc.state_dict(), save_path)
         print(f"Checkpoint saved to {save_path}")
 
     def load_routing_model(self, directory):
@@ -924,5 +923,5 @@ class Trainer:
             raise FileNotFoundError('Checkpoint not found at "{}"'.format(load_path))
         state_dict = torch.load(load_path, map_location=self.device)
         print("Loading weights to from {}".format(load_path))
-        self.routing.load_state_dict(state_dict, strict=True)
+        self.routing.fc.load_state_dict(state_dict, strict=True)
 
