@@ -800,7 +800,6 @@ class Trainer:
         if cfg.test_attack:
             pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=10)
 
-        total_attacked_count = 0
         routing_correct_count = 0
 
         for idx, batch in enumerate(tqdm(data_loader, ascii=True)):
@@ -815,12 +814,8 @@ class Trainer:
 
             if _ncrops <= 5:
                 if cfg.test_attack:
-                    # 划分 clean 和 adv 样本
-                    batch_size = image.size(0)
-                    attack_mask = torch.rand(batch_size, device=self.device) < cfg.attack_ratio
                     adv_image = image.clone()
-                    if not attack_mask.sum().item() == 0:
-                        adv_image[attack_mask] = pgd_attack(image[attack_mask], label.repeat_interleave(_ncrops)[attack_mask])
+                    adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
 
                     if cfg.use_routing:
                         original_indices = torch.arange(adv_image.size(0), device=self.device)
@@ -843,8 +838,7 @@ class Trainer:
                             output[clean_indices] = clean_output
 
                         # 更新计数器
-                        total_attacked_count += attack_mask.sum().item()
-                        routing_correct_count += ((is_attacked == attack_mask).sum().item())
+                        routing_correct_count += (is_attacked.sum().item())
                     else:
                         output = self.model(adv_image, attack_supervise="adv")
                 else:
@@ -864,12 +858,8 @@ class Trainer:
 
             self.evaluator.process(output, label)
 
-            if idx + 1 == 2500:
-                break 
-
         results = self.evaluator.evaluate()
         
-        print(f"Total attacked images: {total_attacked_count}")
         print(f"Routing correct classifications: {routing_correct_count}")
 
         for k, v in results.items():
