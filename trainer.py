@@ -191,7 +191,7 @@ class Trainer:
             num_workers=cfg.num_workers, pin_memory=True)
 
         self.test_loader = DataLoader(test_dataset,
-            batch_size=64, shuffle=False,
+            batch_size=4, shuffle=False,
             num_workers=cfg.num_workers, pin_memory=True)
         
         # 梯度累计方法训练大批量数据，计算梯度累计步数
@@ -803,7 +803,7 @@ class Trainer:
         total_attacked_count = 0
         routing_correct_count = 0
 
-        for batch in tqdm(data_loader, ascii=True):
+        for idx, batch in enumerate(tqdm(data_loader, ascii=True)):
             image = batch[0]
             label = batch[1]
 
@@ -819,24 +819,28 @@ class Trainer:
                     batch_size = image.size(0)
                     attack_mask = torch.rand(batch_size, device=self.device) < cfg.attack_ratio
                     adv_image = image.clone()
-                    adv_image[attack_mask] = pgd_attack(image[attack_mask], label.repeat_interleave(_ncrops)[attack_mask])
+                    if not attack_mask.sum().item() == 0:
+                        adv_image[attack_mask] = pgd_attack(image[attack_mask], label.repeat_interleave(_ncrops)[attack_mask])
 
-                    # 初始化 adv_image，默认和原始 image 相同
-                    adv_image = image.clone()
-                    adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
                     if cfg.use_routing:
                         original_indices = torch.arange(adv_image.size(0), device=self.device)
-                        attack_prob = self.routing(adv_image)
+                        output = self.model(adv_image)
+                        pred = output.max(1)[1]
+                        _ , attack_prob = self.routing(adv_image, pred.repeat_interleave(_ncrops))
                         is_attacked = attack_prob > 0.5
                         attacked_indices = original_indices[is_attacked]
                         clean_indices = original_indices[~is_attacked]
                         attack_image = adv_image[is_attacked]
                         clean_image = adv_image[~is_attacked]
-                        attack_output = self.model(attack_image, attack_supervise="adv")
-                        clean_output = self.model(clean_image, attack_supervise="clean")
-                        output = torch.zeros_like(adv_image.size(0), attack_output.size(-1), device=self.device)  # 初始化完整 output 张量
-                        output[attacked_indices] = attack_output
-                        output[clean_indices] = clean_output
+                        if attack_image.size(0) > 0:
+                            attack_output = self.model(attack_image, attack_supervise="adv")
+                        if clean_image.size(0) > 0:    
+                            clean_output = self.model(clean_image, attack_supervise="clean")
+                        output = torch.zeros(adv_image.size(0), attack_output.size(-1), device=self.device)  # 初始化完整 output 张量
+                        if attack_image.size(0) > 0:
+                            output[attacked_indices] = attack_output
+                        if clean_image.size(0) > 0:    
+                            output[clean_indices] = clean_output
 
                         # 更新计数器
                         total_attacked_count += attack_mask.sum().item()
@@ -859,6 +863,9 @@ class Trainer:
                 output = torch.stack(output).mean(dim=0)
 
             self.evaluator.process(output, label)
+
+            if idx + 1 == 2500:
+                break 
 
         results = self.evaluator.evaluate()
         

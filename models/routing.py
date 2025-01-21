@@ -27,6 +27,7 @@ class Routing(nn.Module):
         )
         self.model = finetuned_clip_model
 
+    @torch.no_grad()
     def make_noise(self, x_batch,spread):
         new_x_batch = []
         for x in x_batch:
@@ -40,6 +41,7 @@ class Routing(nn.Module):
         new_batch = torch.stack(new_x_batch).to(self.device)
         return new_batch
 
+    @torch.no_grad()
     def calculate_attribution_difference(self, inputs, noisy_inputs, target_label=None):
         """
         计算特征归因差异, 使用Integrated Gradients方法。
@@ -65,6 +67,7 @@ class Routing(nn.Module):
         attribution_diff = torch.norm(attributions_original - attributions_noisy, p=inf, dim=(1, 2, 3))
         return attribution_diff
 
+    @torch.no_grad()
     def extract_features_for_routing(self, inputs, spread, target_label=None):
         """
         从微调后的CLIP模型中提取用于路由分类器的特征:
@@ -92,6 +95,7 @@ class Routing(nn.Module):
         features = features.to(self.fc[0].weight.dtype)
         return features, self.fc(features).squeeze()  # 输出对应概率
     
+    @torch.no_grad()
     def visualize_diff(self, logits_diff_clean, logits_diff_adv, attribution_diff_clean, attribution_diff_adv, directory=None):
         """
         可视化干净样本和对抗样本在高斯噪声下的logits差异和特征归因差异
