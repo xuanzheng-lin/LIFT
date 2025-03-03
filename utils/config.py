@@ -73,3 +73,6 @@ _C.evaluate_interval = False
 _C.interval = 5 
 _C.debug = 0
 _C.nowand = True
+_C.lambda_max = 1
+_C.mix_alpha = 1.0
+_C.include_mixup_in_acc = False

@@ -490,13 +490,54 @@ class Trainer:
 
                     adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=10)
 
+                    # Mixup参数设置
+                    mix_alpha = cfg.mix_alpha  # 例如1.0
+                    mix_num = 16  # 选择Mixup的样本数量
+
+                    if mix_alpha > 0 and mix_num > 0:
+                        # 从clean和adv中各随机选择mix_num个样本
+                        mix_clean_idx = torch.randperm(clean_size, device=adv_image.device)[:mix_num]
+                        mix_adv_idx = torch.randperm(attack_size, device=adv_image.device)[:mix_num]
+                        mix_clean = clean_indices[mix_clean_idx]
+                        mix_adv = adv_indices[mix_adv_idx]
+
+                        # 生成混合系数lambda
+                        lam = torch.tensor(np.random.beta(mix_alpha, mix_alpha), device=adv_image.device).float
+                        mixed_images = lam * adv_image[mix_clean] + (1 - lam) * adv_image[mix_adv]
+
+                        # 计算混合样本在两个分支的损失
+                        if cfg.prec == "amp":
+                            with autocast():
+                                clean_mix_out = self.model(mixed_images, attack_supervise="clean")
+                                adv_mix_out = self.model(mixed_images, attack_supervise="adv")
+                        else:
+                            clean_mix_out = self.model(mixed_images, attack_supervise="clean")
+                            adv_mix_out = self.model(mixed_images, attack_supervise="adv")
+                        
+                        clean_mix_loss = lam * self.criterion(clean_mix_out, label[mix_clean])
+                        adv_mix_loss = (1 - lam) * self.criterion(adv_mix_out, label[mix_adv])
+
+                        # 获取剩余样本索引
+                        mask_clean = torch.ones(clean_size, dtype=torch.bool, device=adv_image.device)
+                        mask_clean[mix_clean_idx] = False
+                        remaining_clean = clean_indices[mask_clean]
+                        
+                        mask_adv = torch.ones(attack_size, dtype=torch.bool, device=adv_image.device)
+                        mask_adv[mix_adv_idx] = False
+                        remaining_adv = adv_indices[mask_adv]
+                    else:
+                        remaining_clean = clean_indices
+                        remaining_adv = adv_indices
+                        clean_mix_loss = 0.0
+                        adv_mix_loss = 0.0
+
                     if cfg.prec == "amp":
                         with autocast():
                             # 分别计算 clean 和 adv 样本的输出和 loss
-                            clean_output = self.model(adv_image[clean_indices], attack_supervise="clean")
-                            adv_output = self.model(adv_image[adv_indices], attack_supervise="adv")
-                            clean_loss = self.criterion(clean_output, label[clean_indices])
-                            adv_loss = self.criterion(adv_output, label[adv_indices])
+                            clean_output = self.model(adv_image[remaining_clean], attack_supervise="clean")
+                            adv_output = self.model(adv_image[remaining_adv], attack_supervise="adv")
+                            clean_loss = self.criterion(clean_output, label[remaining_clean]) + clean_mix_loss
+                            adv_loss = self.criterion(adv_output, label[remaining_adv]) + adv_mix_loss
                             # 总 loss
                             loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                             loss_micro = loss / self.accum_step
@@ -506,10 +547,10 @@ class Trainer:
                             self.scaler.update()
                             self.optim.zero_grad()
                     else:
-                        clean_output = self.model(adv_image[clean_indices], attack_supervise="clean")
-                        adv_output = self.model(adv_image[adv_indices], attack_supervise="adv")        
-                        clean_loss = self.criterion(clean_output, label[clean_indices])
-                        adv_loss = self.criterion(adv_output, label[adv_indices])
+                        clean_output = self.model(adv_image[remaining_clean], attack_supervise="clean")
+                        adv_output = self.model(adv_image[remaining_adv], attack_supervise="adv")        
+                        clean_loss = self.criterion(clean_output, label[remaining_clean]) + clean_mix_loss
+                        adv_loss = self.criterion(adv_output, label[remaining_adv]) + adv_mix_loss
                         loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                         loss_micro = loss / self.accum_step
                         loss_micro.backward()
@@ -522,8 +563,31 @@ class Trainer:
                         pred = output.argmax(dim=1)
                         correct = pred.eq(label).float()
                     else:
-                        pred = torch.cat([clean_output, adv_output], dim=0).argmax(dim=1)
-                        correct = pred.eq(torch.cat([label[clean_indices], label[adv_indices]], dim=0)).float()
+                        # 初始化总预测结果和总标签
+                        all_pred = []
+                        all_label = []
+                        # 收集未被混合的原始样本预测结果
+                        if clean_output.numel() > 0:  # 确保存在剩余clean样本
+                            all_pred.append(clean_output.argmax(dim=1))
+                            all_label.append(label[remaining_clean])
+                        if adv_output.numel() > 0:   # 确保存在剩余adv样本
+                            all_pred.append(adv_output.argmax(dim=1))
+                            all_label.append(label[remaining_adv])
+                        # 如果有混合样本且需要包含（可选）
+                        if mix_alpha > 0 and mix_num > 0 and cfg.include_mixup_in_acc:
+                            # 使用混合样本中权重更大的类别作为伪标签
+                            pseudo_label = torch.where(lam > 0.5, 
+                                                    label[mix_clean], 
+                                                    label[mix_adv])
+                            all_pred.extend([
+                                clean_mix_out.argmax(dim=1),
+                                adv_mix_out.argmax(dim=1)
+                            ])
+                            all_label.extend([pseudo_label, pseudo_label])
+                        # 合并所有结果
+                        pred = torch.cat(all_pred, dim=0)
+                        true_label = torch.cat(all_label, dim=0)
+                        correct = pred.eq(true_label).float()
                     acc = correct.mean().mul_(100.0)
 
                 current_lr = self.optim.param_groups[0]["lr"]
@@ -859,8 +923,9 @@ class Trainer:
             self.evaluator.process(output, label)
 
         results = self.evaluator.evaluate()
-        
-        print(f"Routing correct classifications: {routing_correct_count}")
+
+        if cfg.use_routing:
+            print(f"Routing correct classifications: {routing_correct_count}")
 
         for k, v in results.items():
             tag = f"test/{k}"
