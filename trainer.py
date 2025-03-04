@@ -709,8 +709,8 @@ class Trainer:
 
         clean_logits_diff = []
         adv_logits_diff = []
-        clean_attribution_diff = []
-        adv_attribution_diff = []
+        # clean_attribution_diff = []
+        # adv_attribution_diff = []
 
         num_epochs = 1
         for epoch_idx in range(num_epochs):
@@ -744,11 +744,11 @@ class Trainer:
                 if cfg.prec == "amp":
                     with autocast():
                         # 分别计算 clean 和 adv 样本的输出和 loss
-                        clean_features, clean_output = self.routing(adv_image[clean_indices], label[clean_indices])
-                        adv_features, adv_output = self.routing(adv_image[adv_indices], label[adv_indices])
+                        clean_pred, clean_prob = self.routing(adv_image[clean_indices])
+                        adv_pred, adv_prob = self.routing(adv_image[adv_indices])
                         bce_loss_fn = nn.BCEWithLogitsLoss()
-                        clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
-                        adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
+                        clean_loss = bce_loss_fn(clean_prob, torch.zeros(clean_prob.shape[0], device=clean_prob.device))
+                        adv_loss = bce_loss_fn(adv_prob, torch.ones(adv_prob.shape[0], device=adv_prob.device))
                         # 总 loss
                         loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                         loss_micro = loss / self.accum_step
@@ -758,11 +758,11 @@ class Trainer:
                         self.scaler.update()
                         self.optim.zero_grad()
                 else:
-                    clean_features, clean_output = self.routing(adv_image[clean_indices], label[clean_indices])
-                    adv_features, adv_output = self.routing(adv_image[adv_indices], label[adv_indices])
+                    clean_pred, clean_prob = self.routing(adv_image[clean_indices])
+                    adv_pred, adv_prob = self.routing(adv_image[adv_indices])
                     bce_loss_fn = nn.BCEWithLogitsLoss()
-                    clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
-                    adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
+                    clean_loss = bce_loss_fn(clean_prob, torch.zeros(clean_prob.shape[0], device=clean_prob.device))
+                    adv_loss = bce_loss_fn(adv_prob, torch.ones(adv_prob.shape[0], device=adv_prob.device))
                     loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                     loss_micro = loss / self.accum_step
                     loss_micro.backward()
@@ -770,15 +770,17 @@ class Trainer:
                         self.optim.step()
                         self.optim.zero_grad()
 
+                """                 
                 clean_logits_diff.extend(clean_features[:, 0].cpu().detach().numpy())
                 clean_attribution_diff.extend(clean_features[:, 1].cpu().detach().numpy())
                 adv_logits_diff.extend(adv_features[:, 0].cpu().detach().numpy())
-                adv_attribution_diff.extend(adv_features[:, 1].cpu().detach().numpy())
+                adv_attribution_diff.extend(adv_features[:, 1].cpu().detach().numpy()) 
+                """
 
                 with torch.no_grad():
-                    combined_output = torch.cat((clean_output, adv_output), dim=0)
+                    combined_output = torch.cat((clean_pred, adv_pred), dim=0)
                     pred = (combined_output > 0.5).int()
-                    correct = pred.eq(torch.cat([torch.zeros(clean_output.shape[0], device=pred.device), torch.ones(adv_output.shape[0], device=pred.device)], dim=0)).int()
+                    correct = pred.eq(torch.cat([torch.zeros(clean_pred.shape[0], device=pred.device), torch.ones(adv_pred.shape[0], device=pred.device)], dim=0)).int()
 
                 acc = correct.sum().item() / correct.numel()
                 current_lr = self.optim.param_groups[0]["lr"]
@@ -816,9 +818,10 @@ class Trainer:
                 self._writer.add_scalar("train/loss.adv", adv_loss.item(), n_iter)
                 
                 end = time.time()
-                if batch_idx + 1 == 200:
+
+                """ if batch_idx + 1 == 200:
                     self.routing.visualize_diff(clean_logits_diff, adv_logits_diff, clean_attribution_diff, adv_attribution_diff, directory=cfg.output_dir)
-                    break
+                    break """
 
             self.sched.step()
             torch.cuda.empty_cache()
@@ -837,6 +840,131 @@ class Trainer:
 
         # Close writer
         self._writer.close()
+
+    def router_train(self):
+        cfg = self.cfg
+        # freeze finetuned CLIP model 
+        if self.tuner is not None:
+            self.tuner.eval()
+        if self.head is not None:
+            self.head.eval()
+        self.model.eval()
+        self.evaluator.reset()
+
+        self.optim = torch.optim.SGD([{"params": self.routing.parameters()}],
+                                      lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
+
+        num_epochs = 1
+        for epoch_idx in range(num_epochs):
+            num_batches = len(self.train_loader)
+            for batch_idx, batch in enumerate(self.train_loader):
+                image = batch[0]
+                label = batch[1]
+                image = image.to(self.device)
+                label = label.to(self.device)
+
+                # 划分 clean 和 adv 样本
+                batch_size = image.size(0)
+                attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例
+                clean_size = batch_size - attack_size
+
+                # 随机选择攻击样本的索引
+                indices = torch.randperm(batch_size)
+                adv_indices = indices[:attack_size]
+                clean_indices = indices[attack_size:]
+
+                # 初始化 adv_image，默认和原始 image 相同
+                adv_image = image.clone()
+
+                adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=10)
+                self.model.eval()
+
+                self.routing.add_data(images=adv_image[clean_indices], is_adv=torch.zeros(clean_size, device=adv_image.device))
+                self.routing.add_data(images=adv_image[adv_indices], is_adv=torch.ones(attack_size, device=adv_image.device))
+
+            meet_freq = (batch_idx + 1) % cfg.print_freq == 0
+            only_few_batches = num_batches < cfg.print_freq
+            if meet_freq or only_few_batches:
+                info = []
+                info += [f"epoch [{epoch_idx + 1}/{num_epochs}]"]
+                info += [f"batch [{batch_idx + 1}/{num_batches}]"]
+                info += ["data added"]
+                print(" ".join(info))
+        self.threshold = self.routing.find_optimal_threshold()
+        print(f"The router threshold of dataset {cfg.dataset} is {self.threshold}")
+
+    def router_test(self):
+        cfg = self.cfg
+        # freeze finetuned CLIP model 
+        if self.tuner is not None:
+            self.tuner.eval()
+        if self.head is not None:
+            self.head.eval()
+        self.model.eval()
+        self.evaluator.reset()
+
+         # 初始化累计统计变量
+        total_clean_correct = 0
+        total_adv_correct = 0
+        total_clean = 0
+        total_adv = 0
+
+        for batch_idx, batch in enumerate(self.train_loader):
+
+            image = batch[0]
+            label = batch[1]
+            image = image.to(self.device)
+            label = label.to(self.device)
+
+            # 划分 clean 和 adv 样本
+            batch_size = image.size(0)
+            attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例
+            clean_size = batch_size - attack_size
+
+            # 随机选择攻击样本的索引
+            indices = torch.randperm(batch_size)
+            adv_indices = indices[:attack_size]
+            clean_indices = indices[attack_size:]
+
+            # 初始化 adv_image，默认和原始 image 相同
+            adv_image = image.clone()
+
+            adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=10)
+            self.model.eval()
+
+            clean_pred, clean_prob = self.routing(adv_image[clean_indices])
+            adv_pred, adv_prob = self.routing(adv_image[adv_indices])
+
+
+            with torch.no_grad():
+                combined_pred = torch.cat((clean_pred, adv_pred), dim=0)
+                pred_labels = (combined_pred > 0.5).int()
+                true_labels = torch.cat([
+                torch.zeros(clean_size, device=pred_labels.device),
+                torch.ones(attack_size, device=pred_labels.device)
+                ])
+                correct = pred_labels.eq(true_labels).int()
+
+                # 统计当前batch的正确数
+                batch_clean_correct = correct[:clean_size].sum().item()
+                batch_adv_correct = correct[clean_size:].sum().item()
+
+                # 累加统计量
+                total_clean_correct += batch_clean_correct
+                total_adv_correct += batch_adv_correct
+                total_clean += clean_size
+                total_adv += attack_size
+        
+        # 计算最终准确率
+        clean_acc = total_clean_correct / total_clean if total_clean > 0 else 0
+        adv_acc = total_adv_correct / total_adv if total_adv > 0 else 0
+        overall_acc = (total_clean_correct + total_adv_correct) / (total_clean + total_adv)
+    
+        # 打印详细统计信息
+        print(f"Clean Samples: Total={total_clean}, Correct={total_clean_correct}, Accuracy={clean_acc:.4f}")
+        print(f"Adversarial Samples: Total={total_adv}, Correct={total_adv_correct}, Accuracy={adv_acc:.4f}")
+        print(f"All Samples: Total={total_clean + total_adv}, Correct={total_clean_correct + total_adv_correct}, Accuracy={overall_acc:.4f}")
+
 
     def test(self, mode="test"):
         cfg = self.cfg
