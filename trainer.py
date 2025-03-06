@@ -87,7 +87,7 @@ class Trainer:
         self.build_model()
         self.evaluator = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
         self._writer = None
-        self.routing = Routing(cfg, self.model, 2)
+        self.routing = Routing(cfg, self.model)
         self.routing.to(self.device)
 
     def build_data_loader(self):
@@ -492,17 +492,17 @@ class Trainer:
 
                     # Mixup参数设置
                     mix_alpha = cfg.mix_alpha  # 例如1.0
-                    mix_num = 16  # 选择Mixup的样本数量
+                    mix_num = int(clean_size / 4)  # 选择Mixup的样本数量
 
                     if mix_alpha > 0 and mix_num > 0:
                         # 从clean和adv中各随机选择mix_num个样本
-                        mix_clean_idx = torch.randperm(clean_size, device=adv_image.device)[:mix_num]
-                        mix_adv_idx = torch.randperm(attack_size, device=adv_image.device)[:mix_num]
+                        mix_clean_idx = torch.randperm(clean_size)[:mix_num]
+                        mix_adv_idx = torch.randperm(attack_size)[:mix_num]
                         mix_clean = clean_indices[mix_clean_idx]
                         mix_adv = adv_indices[mix_adv_idx]
 
                         # 生成混合系数lambda
-                        lam = torch.tensor(np.random.beta(mix_alpha, mix_alpha), device=adv_image.device).float
+                        lam = torch.tensor(np.random.beta(mix_alpha, mix_alpha), device=adv_image.device).float()
                         mixed_images = lam * adv_image[mix_clean] + (1 - lam) * adv_image[mix_adv]
 
                         # 计算混合样本在两个分支的损失
@@ -518,11 +518,11 @@ class Trainer:
                         adv_mix_loss = (1 - lam) * self.criterion(adv_mix_out, label[mix_adv])
 
                         # 获取剩余样本索引
-                        mask_clean = torch.ones(clean_size, dtype=torch.bool, device=adv_image.device)
+                        mask_clean = torch.ones(clean_size, dtype=torch.bool)
                         mask_clean[mix_clean_idx] = False
                         remaining_clean = clean_indices[mask_clean]
                         
-                        mask_adv = torch.ones(attack_size, dtype=torch.bool, device=adv_image.device)
+                        mask_adv = torch.ones(attack_size, dtype=torch.bool)
                         mask_adv[mix_adv_idx] = False
                         remaining_adv = adv_indices[mask_adv]
                     else:

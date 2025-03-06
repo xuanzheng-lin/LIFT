@@ -29,7 +29,7 @@ class Routing(nn.Module):
         ) 
         """
 
-        self.threshold = nn.Parameter(torch.tensor(0.5), requires_grad=False, device = self.device)
+        self.threshold = nn.Parameter(torch.tensor(0.5), requires_grad=False)
         self.model = finetuned_clip_model
         self.logits_diffs = []
         self.labels = []
