@@ -86,6 +86,7 @@ class Trainer:
         self.build_data_loader()
         self.build_model()
         self.evaluator = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
+        self.evaluator_spare = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
         self._writer = None
         self.routing = Routing(cfg, self.model)
         self.routing.to(self.device)
@@ -1125,6 +1126,7 @@ class Trainer:
         if self.routing is not None:
             self.routing.eval()
         self.evaluator.reset()
+        self.evaluator_spare.reset()
 
         # 初始化统计变量
         both_correct = 0
@@ -1197,6 +1199,12 @@ class Trainer:
             adv_only += batch_adv_only
             neither += batch_neither
 
+            self.evaluator.process(clean_output, label)
+            self.evaluator_spare.process(adv_output, label)
+        
+        self.evaluator.evaluate()
+        self.evaluator_spare.evaluate()
+        
         # 输出统计结果
         print(f"\nClean分支正确数: {both_correct + clean_only}\n")
         print(f"Adv分支正确数: {both_correct + adv_only}\n")
