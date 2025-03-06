@@ -76,6 +76,9 @@ def main(args):
         trainer.load_model(cfg.model_dir)
         if cfg.use_routing:
             trainer.load_routing_model("./output/imagenet_lt_clip_vit_b16_adaptformer_True_train_PGDAT_True_post_train_True")
+        if cfg.bi_channel_test:
+            trainer.bi_channel_test()
+            return
         trainer.test()
         return
     

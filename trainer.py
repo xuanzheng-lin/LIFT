@@ -1115,3 +1115,93 @@ class Trainer:
         print("Loading weights to from {}".format(load_path))
         self.routing.fc.load_state_dict(state_dict, strict=True)
 
+    def bi_channel_test(self, mode="test"):
+        cfg = self.cfg
+
+        if self.tuner is not None:
+            self.tuner.eval()
+        if self.head is not None:
+            self.head.eval()
+        if self.routing is not None:
+            self.routing.eval()
+        self.evaluator.reset()
+
+        # 初始化统计变量
+        both_correct = 0
+        clean_only = 0
+        adv_only = 0
+        neither = 0
+        total_samples = 0
+
+        if mode == "train":
+            print(f"Evaluate on the train set")
+            data_loader = self.train_test_loader
+        elif mode == "test":
+            print(f"Evaluate on the test set")
+            data_loader = self.test_loader
+        
+        if cfg.aa_on_test:
+            AA_acc = evaluate_final_aa(self.model, data_loader)
+            print(f"AA acc on test set is {AA_acc}")
+
+        # 定义处理多crops的函数
+        def process_crops(image, model, attack_supervise):
+            bsz, ncrops, c, h, w = image.size()
+            if ncrops <= 5:
+                image_flat = image.view(-1, c, h, w)
+                output = model(image_flat, attack_supervise=attack_supervise)
+                output = output.view(bsz, ncrops, -1).mean(1)
+            else:
+                outputs = []
+                for i in range(ncrops):
+                    crop = image[:, i, :, :, :]
+                    out = model(crop, attack_supervise=attack_supervise)
+                    outputs.append(out)
+                output = torch.stack(outputs).mean(0)
+            return output
+
+        # 创建PGD攻击实例
+        pgd_attack = torchattacks.PGD(self.model, eps=cfg.attack_eps, alpha=cfg.attack_alpha, 
+                                    steps=cfg.attack_steps, random_start=True)
+
+        for idx, batch in enumerate(tqdm(data_loader, ascii=True)):
+            image = batch[0].to(self.device)
+            label = batch[1].to(self.device)
+            bsz, ncrops, c, h, w = image.size()
+            total_samples += bsz  # 按batch累积样本总数
+
+            # Clean分支处理
+            clean_output = process_crops(image, self.model, "clean")
+            clean_pred = clean_output.argmax(dim=1)
+            clean_correct = (clean_pred == label).cpu().numpy()
+
+            # 生成对抗样本
+            image_flat = image.view(bsz * ncrops, c, h, w)
+            labels_flat = label.repeat_interleave(ncrops)
+            adv_image_flat = pgd_attack(image_flat, labels_flat)
+            adv_image = adv_image_flat.view(bsz, ncrops, c, h, w)
+
+            # Adv分支处理
+            adv_output = process_crops(adv_image, self.model, "adv")
+            adv_pred = adv_output.argmax(dim=1)
+            adv_correct = (adv_pred == label).cpu().numpy()
+
+            # 统计四种情况
+            batch_both = np.sum(np.logical_and(clean_correct, adv_correct))
+            batch_clean_only = np.sum(np.logical_and(clean_correct, ~adv_correct))
+            batch_adv_only = np.sum(np.logical_and(~clean_correct, adv_correct))
+            batch_neither = np.sum(np.logical_and(~clean_correct, ~adv_correct))
+
+            both_correct += batch_both
+            clean_only += batch_clean_only
+            adv_only += batch_adv_only
+            neither += batch_neither
+
+        # 输出统计结果
+        print(f"\nClean分支正确数: {both_correct + clean_only}\n")
+        print(f"Adv分支正确数: {both_correct + adv_only}\n")
+        print(f"两分支都正确: {both_correct}\n")
+        print(f"仅Clean正确: {clean_only}\n")
+        print(f"仅Adv正确: {adv_only}\n")
+        print(f"两分支都错误: {neither}\n")
+        print(f"总样本数: {total_samples}")
