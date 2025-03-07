@@ -985,10 +985,6 @@ class Trainer:
         elif mode == "test":
             print(f"Evaluate on the test set")
             data_loader = self.test_loader
-        
-        if cfg.aa_on_test:
-            AA_acc = evaluate_final_aa(self.model, data_loader)
-            print(f"AA acc on test set is {AA_acc}")
 
         if cfg.test_attack:
             pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=10)
@@ -1141,10 +1137,6 @@ class Trainer:
         elif mode == "test":
             print(f"Evaluate on the test set")
             data_loader = self.test_loader
-        
-        if cfg.aa_on_test:
-            AA_acc = evaluate_final_aa(self.model, data_loader)
-            print(f"AA acc on test set is {AA_acc}")
 
         # 定义处理多crops的函数
         def process_crops(image, model, attack_supervise):
@@ -1213,3 +1205,29 @@ class Trainer:
         print(f"仅Adv正确: {adv_only}\n")
         print(f"两分支都错误: {neither}\n")
         print(f"总样本数: {total_samples}")
+
+    def aa_test(self, mode="test"):
+        cfg = self.cfg
+
+        if self.tuner is not None:
+            self.tuner.eval()
+        if self.head is not None:
+            self.head.eval()
+        if self.routing is not None:
+            self.routing.eval()
+        self.evaluator.reset()
+
+        if mode == "train":
+            print(f"Evaluate on the train set")
+            data_loader = self.train_test_loader
+        elif mode == "test":
+            print(f"Evaluate on the test set")
+            data_loader = self.test_loader
+
+        autoattack = AutoAttack(self.model, norm='Linf', eps=8/255, seed=cfg.seed, version='standard')
+        x_total = [x for (x, y) in data_loader]
+        y_total = [y for (x, y) in data_loader]
+        x_total = torch.cat(x_total, 0)
+        y_total = torch.cat(y_total, 0)
+        _, AA_acc = autoattack.run_standard_evaluation(x_total, y_total)
+        print(f"The accuray under AutoAttack is: {AA_acc}")

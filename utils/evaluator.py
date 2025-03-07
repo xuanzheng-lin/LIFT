@@ -301,12 +301,3 @@ def evaluate_interval(model, test_loader, config, num_classes, wandb, epoch, pre
         wandb.log(d2)
 
     return acc, rob, class_correct_adv
-
-def evaluate_final_aa(model, test_loader):
-    autoattack = AutoAttack(model, norm='Linf', eps=8/255.0, version='standard')
-    x_total = [x for (x, y) in test_loader]
-    y_total = [y for (x, y) in test_loader]
-    x_total = torch.cat(x_total, 0)
-    y_total = torch.cat(y_total, 0)
-    _, AA_acc = autoattack.run_standard_evaluation(x_total, y_total)
-    return AA_acc
