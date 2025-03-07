@@ -883,14 +883,14 @@ class Trainer:
                 self.routing.add_data(images=adv_image[clean_indices], is_adv=torch.zeros(clean_size, device=adv_image.device))
                 self.routing.add_data(images=adv_image[adv_indices], is_adv=torch.ones(attack_size, device=adv_image.device))
 
-            meet_freq = (batch_idx + 1) % cfg.print_freq == 0
-            only_few_batches = num_batches < cfg.print_freq
-            if meet_freq or only_few_batches:
-                info = []
-                info += [f"epoch [{epoch_idx + 1}/{num_epochs}]"]
-                info += [f"batch [{batch_idx + 1}/{num_batches}]"]
-                info += ["data added"]
-                print(" ".join(info))
+                meet_freq = (batch_idx + 1) % cfg.print_freq == 0
+                only_few_batches = num_batches < cfg.print_freq
+                if meet_freq or only_few_batches:
+                    info = []
+                    info += [f"epoch [{epoch_idx + 1}/{num_epochs}]"]
+                    info += [f"batch [{batch_idx + 1}/{num_batches}]"]
+                    info += ["data added"]
+                    print(" ".join(info))
         self.threshold = self.routing.find_optimal_threshold()
         print(f"The router threshold of dataset {cfg.dataset} is {self.threshold}")
 
@@ -910,7 +910,7 @@ class Trainer:
         total_clean = 0
         total_adv = 0
 
-        for batch_idx, batch in enumerate(self.train_loader):
+        for batch_idx, batch in enumerate(self.test_loader):
 
             image = batch[0]
             label = batch[1]
