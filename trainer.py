@@ -888,6 +888,9 @@ class Trainer:
                     info += [f"batch [{batch_idx + 1}/{num_batches}]"]
                     info += ["data added"]
                     print(" ".join(info))
+                if batch_idx + 1 == 100:
+                    break
+                
         self.threshold = self.routing.find_optimal_threshold()
         print(f"The router threshold of dataset {cfg.dataset} is {self.threshold}")
         self.router_test()
@@ -915,6 +918,9 @@ class Trainer:
             image = image.to(self.device)
             label = label.to(self.device)
 
+            _bsz, _ncrops, _c, _h, _w = image.size()
+            image = image.view(_bsz * _ncrops, _c, _h, _w)
+            
             # 划分 clean 和 adv 样本
             batch_size = image.size(0)
             attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例

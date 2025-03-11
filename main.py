@@ -91,6 +91,15 @@ def main(args):
         trainer.post_train()
         return
 
+    if cfg.router_train == True:
+        if cfg.model_dir is None:
+            cfg.model_dir = cfg.output_dir[:cfg.output_dir.index("_router_train_True")]
+            print("Model directory: {}".format(cfg.model_dir))
+        
+        trainer.load_model(cfg.model_dir)
+        trainer.router_train()
+        return
+    
     trainer.train()
 
 if __name__ == "__main__":

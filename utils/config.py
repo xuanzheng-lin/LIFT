@@ -77,3 +77,4 @@ _C.lambda_max = 1
 _C.mix_alpha = 1.0
 _C.include_mixup_in_acc = False
 _C.bi_channel_test = False
+_C.router_train = False

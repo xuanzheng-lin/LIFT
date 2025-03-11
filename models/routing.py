@@ -36,16 +36,16 @@ class Routing(nn.Module):
 
     @torch.no_grad()
     def make_noise(self, x_batch,spread):
-        new_x_batch = []
-        for x in x_batch:
-            x = x.data.cpu().numpy()
-            stdev = spread * (np.max(x)-np.min(x))
-            noise = np.random.normal(0, stdev, x.shape).astype(np.float32)
-            x_plus_noise = x + noise
-            x_plus_noise = np.clip(x_plus_noise, 0, 1)
-            x_plus_noise = torch.from_numpy(x_plus_noise).cpu()
-            new_x_batch.append(x_plus_noise)
-        new_batch = torch.stack(new_x_batch).to(self.device)
+        
+        # 在GPU上直接计算极值（避免CPU转换）
+        max_vals = x_batch.view(x_batch.size(0), -1).max(dim=1)[0][:, None, None, None]
+        min_vals = x_batch.view(x_batch.size(0), -1).min(dim=1)[0][:, None, None, None]
+    
+        # 向量化计算噪声（避免for循环）
+        stdev = spread * (max_vals - min_vals)
+        with torch.cuda.amp.autocast():
+            noise = torch.randn_like(x_batch, dtype=torch.float16) * stdev
+        new_batch = torch.clamp(x_batch + noise, 0, 1).to(self.device)
         return new_batch
 
     @torch.no_grad()
@@ -114,8 +114,8 @@ class Routing(nn.Module):
 
     def find_optimal_threshold(self):
         # 合并所有数据
-        logits_diffs = torch.cat(self.logits_diffs)
-        labels = torch.cat(self.labels)
+        logits_diffs = torch.cat(self.logits_diffs).cpu()
+        labels = torch.cat(self.labels).cpu()
         
         # 通过ROC曲线寻找最佳阈值
         fpr, tpr, thresholds = roc_curve(labels.numpy(), logits_diffs.numpy())
