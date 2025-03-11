@@ -192,7 +192,7 @@ class Trainer:
             num_workers=cfg.num_workers, pin_memory=True)
 
         self.test_loader = DataLoader(test_dataset,
-            batch_size=4, shuffle=False,
+            batch_size=64, shuffle=False,
             num_workers=cfg.num_workers, pin_memory=True)
         
         # 梯度累计方法训练大批量数据，计算梯度累计步数
@@ -852,9 +852,6 @@ class Trainer:
         self.model.eval()
         self.evaluator.reset()
 
-        self.optim = torch.optim.SGD([{"params": self.routing.parameters()}],
-                                      lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
-
         num_epochs = 1
         for epoch_idx in range(num_epochs):
             num_batches = len(self.train_loader)
@@ -893,6 +890,7 @@ class Trainer:
                     print(" ".join(info))
         self.threshold = self.routing.find_optimal_threshold()
         print(f"The router threshold of dataset {cfg.dataset} is {self.threshold}")
+        self.router_test()
 
     def router_test(self):
         cfg = self.cfg
