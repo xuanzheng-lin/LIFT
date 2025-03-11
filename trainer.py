@@ -1153,8 +1153,7 @@ class Trainer:
             return output
 
         # 创建PGD攻击实例
-        pgd_attack = torchattacks.PGD(self.model, eps=cfg.attack_eps, alpha=cfg.attack_alpha, 
-                                    steps=cfg.attack_steps, random_start=True)
+        pgd_attack = torchattacks.PGD(self.model, steps=10, random_start=True)
 
         for idx, batch in enumerate(tqdm(data_loader, ascii=True)):
             image = batch[0].to(self.device)
