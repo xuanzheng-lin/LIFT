@@ -23,8 +23,7 @@ class Routing(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 2),
-            nn.Softmax()
+            nn.Linear(64, 1)
         ) 
 
 
@@ -127,8 +126,8 @@ class Routing(nn.Module):
     
     def forward(self, images, labels=None, spread=0.35):
         features = self.extract_logits_diff(images, spread)
-        features = features.to(self.fc[0].weight.dtype)
-        return features, self.fc(features) 
+        features = features.to(self.fc[0].weight.dtype).unsqueeze(1)
+        return features, self.fc(features).squeeze()
         """返回概率和判断结果"""
         logits_diff = self.extract_logits_diff(images, spread)
         probabilities = torch.sigmoid(self.threshold - logits_diff)  # 转换为概率

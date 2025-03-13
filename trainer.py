@@ -708,10 +708,10 @@ class Trainer:
         # Remember the starting time (for computing the elapsed time)
         time_start = time.time()
 
-        #clean_logits_diff = []
-        #adv_logits_diff = []
-        # clean_attribution_diff = []
-        # adv_attribution_diff = []
+        clean_logits_diff = []
+        adv_logits_diff = []
+        clean_attribution_diff = [1]
+        adv_attribution_diff = [1]
 
         num_epochs = 1
         for epoch_idx in range(num_epochs):
@@ -747,8 +747,6 @@ class Trainer:
                         # 分别计算 clean 和 adv 样本的输出和 loss
                         clean_features, clean_output = self.routing(adv_image[clean_indices])
                         adv_features, adv_output = self.routing(adv_image[adv_indices])
-                        clean_output = clean_output.max(dim=1)[0]
-                        adv_output = adv_output.max(dim=1)[0]
                         bce_loss_fn = nn.BCEWithLogitsLoss()
                         clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
                         adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
@@ -763,8 +761,6 @@ class Trainer:
                 else:
                     clean_features, clean_output = self.routing(adv_image[clean_indices])
                     adv_features, adv_output = self.routing(adv_image[adv_indices])
-                    clean_output = clean_output.max(dim=1)[0]
-                    adv_output = adv_output.max(dim=1)[0]
                     bce_loss_fn = nn.BCEWithLogitsLoss()
                     clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
                     adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
@@ -775,16 +771,16 @@ class Trainer:
                         self.optim.step()
                         self.optim.zero_grad()
 
-                """                 
+                            
                 clean_logits_diff.extend(clean_features[:, 0].cpu().detach().numpy())
-                clean_attribution_diff.extend(clean_features[:, 1].cpu().detach().numpy())
+                #clean_attribution_diff.extend(clean_features[:, 1].cpu().detach().numpy())
                 adv_logits_diff.extend(adv_features[:, 0].cpu().detach().numpy())
-                adv_attribution_diff.extend(adv_features[:, 1].cpu().detach().numpy()) 
-                """
+                #adv_attribution_diff.extend(adv_features[:, 1].cpu().detach().numpy()) 
+                
 
                 with torch.no_grad():
                     combined_output = torch.cat((clean_output, adv_output), dim=0)
-                    pred = (combined_output > 0.5).int()
+                    pred = (torch.sigmoid(combined_output) > 0.5).int()
                     correct = pred.eq(torch.cat([torch.zeros(clean_output.shape[0], device=pred.device), torch.ones(adv_output.shape[0], device=pred.device)], dim=0)).int()
 
                 acc = correct.sum().item() / correct.numel()
@@ -825,7 +821,7 @@ class Trainer:
                 end = time.time()
 
                 if batch_idx + 1 == 200:
-                    #self.routing.visualize_diff(clean_logits_diff, adv_logits_diff, clean_attribution_diff, adv_attribution_diff, directory=cfg.output_dir)
+                    self.routing.visualize_diff(clean_logits_diff, adv_logits_diff, clean_attribution_diff, adv_attribution_diff, directory=cfg.output_dir)
                     break
 
             self.sched.step()
