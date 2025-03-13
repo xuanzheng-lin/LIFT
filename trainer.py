@@ -88,7 +88,7 @@ class Trainer:
         self.evaluator = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
         self.evaluator_spare = Evaluator(cfg, self.many_idxs, self.med_idxs, self.few_idxs)
         self._writer = None
-        self.routing = Routing(cfg, self.model)
+        self.routing = Routing(cfg, self.model, 1)
         self.routing.to(self.device)
 
     def build_data_loader(self):
@@ -708,8 +708,8 @@ class Trainer:
         # Remember the starting time (for computing the elapsed time)
         time_start = time.time()
 
-        clean_logits_diff = []
-        adv_logits_diff = []
+        #clean_logits_diff = []
+        #adv_logits_diff = []
         # clean_attribution_diff = []
         # adv_attribution_diff = []
 
@@ -745,11 +745,13 @@ class Trainer:
                 if cfg.prec == "amp":
                     with autocast():
                         # 分别计算 clean 和 adv 样本的输出和 loss
-                        clean_pred, clean_prob = self.routing(adv_image[clean_indices])
-                        adv_pred, adv_prob = self.routing(adv_image[adv_indices])
+                        clean_features, clean_output = self.routing(adv_image[clean_indices])
+                        adv_features, adv_output = self.routing(adv_image[adv_indices])
+                        clean_output = clean_output.max(dim=1)[0]
+                        adv_output = adv_output.max(dim=1)[0]
                         bce_loss_fn = nn.BCEWithLogitsLoss()
-                        clean_loss = bce_loss_fn(clean_prob, torch.zeros(clean_prob.shape[0], device=clean_prob.device))
-                        adv_loss = bce_loss_fn(adv_prob, torch.ones(adv_prob.shape[0], device=adv_prob.device))
+                        clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
+                        adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
                         # 总 loss
                         loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                         loss_micro = loss / self.accum_step
@@ -759,11 +761,13 @@ class Trainer:
                         self.scaler.update()
                         self.optim.zero_grad()
                 else:
-                    clean_pred, clean_prob = self.routing(adv_image[clean_indices])
-                    adv_pred, adv_prob = self.routing(adv_image[adv_indices])
+                    clean_features, clean_output = self.routing(adv_image[clean_indices])
+                    adv_features, adv_output = self.routing(adv_image[adv_indices])
+                    clean_output = clean_output.max(dim=1)[0]
+                    adv_output = adv_output.max(dim=1)[0]
                     bce_loss_fn = nn.BCEWithLogitsLoss()
-                    clean_loss = bce_loss_fn(clean_prob, torch.zeros(clean_prob.shape[0], device=clean_prob.device))
-                    adv_loss = bce_loss_fn(adv_prob, torch.ones(adv_prob.shape[0], device=adv_prob.device))
+                    clean_loss = bce_loss_fn(clean_output, torch.zeros(clean_output.shape[0], device=clean_output.device))
+                    adv_loss = bce_loss_fn(adv_output, torch.ones(adv_output.shape[0], device=adv_output.device))
                     loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
                     loss_micro = loss / self.accum_step
                     loss_micro.backward()
@@ -779,9 +783,9 @@ class Trainer:
                 """
 
                 with torch.no_grad():
-                    combined_output = torch.cat((clean_pred, adv_pred), dim=0)
+                    combined_output = torch.cat((clean_output, adv_output), dim=0)
                     pred = (combined_output > 0.5).int()
-                    correct = pred.eq(torch.cat([torch.zeros(clean_pred.shape[0], device=pred.device), torch.ones(adv_pred.shape[0], device=pred.device)], dim=0)).int()
+                    correct = pred.eq(torch.cat([torch.zeros(clean_output.shape[0], device=pred.device), torch.ones(adv_output.shape[0], device=pred.device)], dim=0)).int()
 
                 acc = correct.sum().item() / correct.numel()
                 current_lr = self.optim.param_groups[0]["lr"]
@@ -820,9 +824,9 @@ class Trainer:
                 
                 end = time.time()
 
-                """ if batch_idx + 1 == 200:
-                    self.routing.visualize_diff(clean_logits_diff, adv_logits_diff, clean_attribution_diff, adv_attribution_diff, directory=cfg.output_dir)
-                    break """
+                if batch_idx + 1 == 200:
+                    #self.routing.visualize_diff(clean_logits_diff, adv_logits_diff, clean_attribution_diff, adv_attribution_diff, directory=cfg.output_dir)
+                    break
 
             self.sched.step()
             torch.cuda.empty_cache()

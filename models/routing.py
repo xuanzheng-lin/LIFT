@@ -10,7 +10,7 @@ import os
 from sklearn.metrics import roc_curve
 
 class Routing(nn.Module):
-    def __init__(self, cfg, finetuned_clip_model):
+    def __init__(self, cfg, finetuned_clip_model, input_dim):
         super(Routing, self).__init__()
         if not torch.cuda.is_available():
             self.device = torch.device("cpu")
@@ -19,15 +19,14 @@ class Routing(nn.Module):
         else:
             torch.cuda.set_device(cfg.gpu)
             self.device = torch.device("cuda:{}".format(cfg.gpu))
-
-        """         
+       
         self.fc = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 1),
-            # nn.Sigmoid()
+            nn.Linear(64, 2),
+            nn.Softmax()
         ) 
-        """
+
 
         self.threshold = nn.Parameter(torch.tensor(0.5), requires_grad=False)
         self.model = finetuned_clip_model
@@ -54,7 +53,7 @@ class Routing(nn.Module):
         noisy_inputs = self.make_noise(inputs, spread=spread)
         logits_original = self.model(inputs, return_feature=True)
         logits_noisy = self.model(noisy_inputs, return_feature=True)
-        return torch.norm(logits_original - logits_noisy, p=float('inf'), dim=1)
+        return torch.norm(logits_original - logits_noisy, p=inf, dim=1)
     
     @torch.no_grad()
     def calculate_attribution_difference(self, inputs, noisy_inputs, target_label=None):
@@ -126,12 +125,15 @@ class Routing(nn.Module):
         
         return thresholds[optimal_idx]
     
-    def forward(self, images, spread=0.35):
+    def forward(self, images, labels=None, spread=0.35):
+        features = self.extract_logits_diff(images, spread)
+        features = features.to(self.fc[0].weight.dtype)
+        return features, self.fc(features) 
         """返回概率和判断结果"""
         logits_diff = self.extract_logits_diff(images, spread)
         probabilities = torch.sigmoid(self.threshold - logits_diff)  # 转换为概率
         predictions = (probabilities > 0.5).int()
-        return predictions, probabilities
+        return predictions, probabilities   # 输出对应概率
     
     @torch.no_grad()
     def visualize_diff(self, logits_diff_clean, logits_diff_adv, attribution_diff_clean, attribution_diff_adv, directory=None):
