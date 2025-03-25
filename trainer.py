@@ -493,7 +493,7 @@ class Trainer:
 
                     # Mixup参数设置
                     mix_alpha = cfg.mix_alpha  # 例如1.0
-                    mix_num = int(clean_size / 4)  # 选择Mixup的样本数量
+                    mix_num = int(clean_size / 2)  # 选择Mixup的样本数量
 
                     if mix_alpha > 0 and mix_num > 0:
                         # 从clean和adv中各随机选择mix_num个样本
@@ -970,7 +970,21 @@ class Trainer:
         print(f"Adversarial Samples: Total={total_adv}, Correct={total_adv_correct}, Accuracy={adv_acc:.4f}")
         print(f"All Samples: Total={total_clean + total_adv}, Correct={total_clean_correct + total_adv_correct}, Accuracy={overall_acc:.4f}")
 
-
+    def create_attack(self, model, num_classes):
+        cfg = self.cfg
+        attack_map = {
+            'pgd': lambda: torchattacks.PGD(model, random_start=True, steps=10),
+            'fgsm': lambda: torchattacks.FGSM(model),
+            'auto_attack': lambda: torchattacks.AutoAttack(model, n_classes=num_classes)
+        }
+        
+        # 获取攻击构造函数并创建实例
+        attack = attack_map.get(cfg.attack_method.lower())
+        if attack is None:
+            raise ValueError(f"Unsupported attack method: {cfg.attack_method}")
+            
+        return attack()
+    
     def test(self, mode="test"):
         cfg = self.cfg
         # self.visualizer = PGDVisualizer(self.model, self.device)
@@ -991,7 +1005,7 @@ class Trainer:
             data_loader = self.test_loader
 
         if cfg.test_attack:
-            pgd_attack = torchattacks.PGD(self.model, random_start=True, steps=10)
+            self.test_attack = self.create_attack(self.model, self.num_classes)
 
         routing_correct_count = 0
 
@@ -1008,7 +1022,8 @@ class Trainer:
             if _ncrops <= 5:
                 if cfg.test_attack:
                     adv_image = image.clone()
-                    adv_image = pgd_attack(image, label.repeat_interleave(_ncrops))
+                    with torch.no_grad():
+                        adv_image = self.test_attack(image, label.repeat_interleave(_ncrops))
 
                     if cfg.use_routing:
                         original_indices = torch.arange(adv_image.size(0), device=self.device)
@@ -1043,7 +1058,7 @@ class Trainer:
                 image = image.view(_bsz, _ncrops, _c, _h, _w)
                 for k in range(_ncrops):
                     if cfg.test_attack:
-                        adv_image = pgd_attack(image[:, k], label)
+                        adv_image = self.test_attack(image[:, k], label)
                         output.append(self.model(adv_image, attack_supervise="adv"))
                     else:
                         output.append(self.model(image[:, k]))
@@ -1158,8 +1173,8 @@ class Trainer:
                 output = torch.stack(outputs).mean(0)
             return output
 
-        # 创建PGD攻击实例
-        pgd_attack = torchattacks.PGD(self.model, steps=10, random_start=True)
+        # 创建攻击实例
+        self.test_attack = self.create_attack(self.model, self.num_classes)
 
         for idx, batch in enumerate(tqdm(data_loader, ascii=True)):
             image = batch[0].to(self.device)
@@ -1175,7 +1190,7 @@ class Trainer:
             # 生成对抗样本
             image_flat = image.view(bsz * ncrops, c, h, w)
             labels_flat = label.repeat_interleave(ncrops)
-            adv_image_flat = pgd_attack(image_flat, labels_flat)
+            adv_image_flat = self.test_attack(image_flat, labels_flat)
             adv_image = adv_image_flat.view(bsz, ncrops, c, h, w)
 
             # Adv分支处理

@@ -64,6 +64,7 @@ _C.test_train = False  # load model and test on the training set
 _C.model_dir = None
 
 _C.test_attack = False
+_C.attack_method = "pgd" # "fgsm" / "pgd"(default) / "auto_attack"
 _C.use_routing = False
 _C.aa_on_test = False
 _C.train_PGDAT = False
