@@ -6,3 +6,6 @@ tqdm
 ftfy
 regex
 timm
+torchattacks
+captum
+seaborn
