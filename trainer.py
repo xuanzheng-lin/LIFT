@@ -515,8 +515,8 @@ class Trainer:
                             clean_mix_out = self.model(mixed_images, attack_supervise="clean")
                             adv_mix_out = self.model(mixed_images, attack_supervise="adv")
                         
-                        clean_mix_loss = lam * self.criterion(clean_mix_out, label[mix_clean])
-                        adv_mix_loss = (1 - lam) * self.criterion(adv_mix_out, label[mix_adv])
+                        clean_mix_loss = lam * self.criterion(clean_mix_out, label[mix_clean]) + (1 - lam) * self.criterion(clean_mix_out, label[mix_adv])
+                        adv_mix_loss = lam * self.criterion(adv_mix_out, label[mix_clean]) + (1 - lam) * self.criterion(adv_mix_out, label[mix_adv])
 
                         # 获取剩余样本索引
                         mask_clean = torch.ones(clean_size, dtype=torch.bool)
@@ -697,8 +697,8 @@ class Trainer:
         self.model.eval()
         self.evaluator.reset()
 
-        self.optim = torch.optim.SGD([{"params": self.routing.parameters()}],
-                                      lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
+        self.optim = torch.optim.Adam([{"params": self.routing.parameters()}],
+                                      lr=cfg.lr, weight_decay=cfg.weight_decay)
 
         # Initialize average meters
         batch_time = AverageMeter()
