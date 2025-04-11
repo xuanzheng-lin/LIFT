@@ -195,8 +195,9 @@ def expected_calibration_error(confs, preds, labels, num_bins=10):
     return ece
 
 
-def PGD(images, labels, model, eps=8/255, alpha=2/225, steps=10, random_start=True):
-    model.train()
+def PGD(model, images, labels, eps=8/255, alpha=2/255, steps=10, random_start=True):
+    assert torch.max(images) < 1. + 1e-6 and torch.min(images) > -1e-6
+    model.eval()
     for _, m in model.named_modules():
         if 'BatchNorm' in m.__class__.__name__:
             m = m.eval()

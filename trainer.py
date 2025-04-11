@@ -107,7 +107,7 @@ class Trainer:
         print("std:", std)
 
         transform_train = transforms.Compose([
-            transforms.RandomResizedCrop(resolution),
+            transforms.RandomResizedCrop(resolution, interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
@@ -192,7 +192,7 @@ class Trainer:
             num_workers=cfg.num_workers, pin_memory=True)
 
         self.test_loader = DataLoader(test_dataset,
-            batch_size=64, shuffle=False,
+            batch_size=32, shuffle=False,
             num_workers=cfg.num_workers, pin_memory=True)
         
         # 梯度累计方法训练大批量数据，计算梯度累计步数
@@ -431,6 +431,8 @@ class Trainer:
         os.makedirs(writer_dir, exist_ok=True)
         print(f"Initialize tensorboard (log_dir={writer_dir})")
         self._writer = SummaryWriter(log_dir=writer_dir)
+        print(f"Initialize attack method {cfg.attack_method}")
+        self.train_attack = self.create_attack(self.model, self.num_classes)
 
         # Initialize average meters
         batch_time = AverageMeter()
@@ -489,7 +491,7 @@ class Trainer:
                     # 初始化 adv_image，默认和原始 image 相同
                     adv_image = image.clone()
 
-                    adv_image[adv_indices] = PGD(image[adv_indices], label[adv_indices], self.model, steps=10)
+                    adv_image[adv_indices] = self.train_attack(image[adv_indices], label[adv_indices])
 
                     # Mixup参数设置
                     mix_alpha = cfg.mix_alpha  # 例如1.0
@@ -1022,8 +1024,8 @@ class Trainer:
             if _ncrops <= 5:
                 if cfg.test_attack:
                     adv_image = image.clone()
-                    with torch.no_grad():
-                        adv_image = self.test_attack(image, label.repeat_interleave(_ncrops))
+                    # with torch.no_grad():
+                    adv_image = self.test_attack(image, label.repeat_interleave(_ncrops))
 
                     if cfg.use_routing:
                         original_indices = torch.arange(adv_image.size(0), device=self.device)
