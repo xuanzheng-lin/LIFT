@@ -23,7 +23,10 @@ class Routing(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
         ) 
 
 
@@ -52,7 +55,7 @@ class Routing(nn.Module):
         noisy_inputs = self.make_noise(inputs, spread=spread)
         logits_original = self.model(inputs, return_feature=True)
         logits_noisy = self.model(noisy_inputs, return_feature=True)
-        return torch.norm(logits_original - logits_noisy, p=inf, dim=1)
+        return torch.norm(logits_original - logits_noisy, p=1, dim=1)
     
     @torch.no_grad()
     def calculate_attribution_difference(self, inputs, noisy_inputs, target_label=None):
@@ -126,6 +129,8 @@ class Routing(nn.Module):
     
     def forward(self, images, labels=None, spread=0.35):
         features = self.extract_logits_diff(images, spread)
+        # 归一化特征
+        features = (features - features.mean()) / features.std()  # 标准化
         features = features.to(self.fc[0].weight.dtype).unsqueeze(1)
         return features, self.fc(features).squeeze()
         """返回概率和判断结果"""

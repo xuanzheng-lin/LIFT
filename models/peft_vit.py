@@ -1,3 +1,4 @@
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -244,8 +245,7 @@ class ViT_Tuner(nn.Module):
         self.ln_tuned = ln_tuned
         self.vpt_list = vpt_list
         self.adapter_list = adapter_list
-        self.adaptformer_list_clean = copy.deepcopy(adaptformer_list)
-        self.adaptformer_list_adv = copy.deepcopy(adaptformer_list)
+        self.adaptformer_list = adaptformer_list
         self.lora_list = lora_list
         self.lora_mlp_list = lora_mlp_list
         self.ssf_attn_list = ssf_attn_list
@@ -285,7 +285,7 @@ class Peft_ViT(nn.Module):
     def dtype(self):
         return self.patch_embedding.weight.dtype
 
-    def forward(self, x, tuner=None, head=None, attack_supervise=None):
+    def forward(self, x, tuner=None, head=None, attack_supervise=None, text_feature=None):
         x = x.to(self.dtype)
         x = self.patch_embedding(x)  # shape = [*, width(embedding_dim), grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
@@ -306,8 +306,7 @@ class Peft_ViT(nn.Module):
             if tuner is not None:
                 vpt = tuner.vpt_list[i]
                 adapter = tuner.adapter_list[i]
-                adaptformer_clean = tuner.adaptformer_list_clean[i]
-                adaptformer_adv = tuner.adaptformer_list_adv[i]
+                adaptformer = tuner.adaptformer_list[i]
                 lora = tuner.lora_list[i]
                 lora_mlp = tuner.lora_mlp_list[i]
                 ssf_attn = tuner.ssf_attn_list[i]
@@ -315,7 +314,7 @@ class Peft_ViT(nn.Module):
                 ssf_ln = tuner.ssf_ln_list[i]
                 masked_linear = tuner.masked_linear_list[i]
             else:
-                vpt = adapter = adaptformer_clean = adaptformer_adv = lora = lora_mlp = ssf_attn = ssf_mlp = ssf_ln = masked_linear = None
+                vpt = adapter = adaptformer = lora = lora_mlp = ssf_attn = ssf_mlp = ssf_ln = masked_linear = None
 
             if vpt is not None:
                 x = vpt(x)
@@ -450,14 +449,8 @@ class Peft_ViT(nn.Module):
             if adapter is not None:
                 x = x + adapter(x)
             
-            if adaptformer_clean or adaptformer_adv is not None:
-                if attack_supervise == "clean":
-                    x = x + adaptformer_clean(identity)
-                elif attack_supervise == "adv":
-                    x = x + adaptformer_adv(identity)
-                elif attack_supervise is None:
-                    x = x + adaptformer_clean(identity)
-                   # 测试集上需要一个路由来检测
+            if adaptformer is not None:
+                x = x + adaptformer(identity)
             
             x = x + identity
             
@@ -465,7 +458,11 @@ class Peft_ViT(nn.Module):
 
         x = x[:, 0, :]
         x = self.ln_post(x)
-        # x = x @ self.proj
+
+        if text_feature is not None:
+            x = x @ self.proj
+            logits_per_image = x @ text_feature.t()
+            return logits_per_image
 
         if head is None:
             return x

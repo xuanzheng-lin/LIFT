@@ -67,13 +67,24 @@ class PeftModelFromCLIP(nn.Module):
             text_features = torch.cat([self.text_encoder(x) for x in text_split])
         return text_features
     
-    def forward(self, image, use_tuner=True, return_feature=False, attack_supervise=None):
+    def forward(self, image, use_tuner=True, return_feature=False, attack_supervise=None, use_tecoa = False, text_feature=None):
         tuner = self.tuner if use_tuner else None
         head = self.head if not return_feature else None
-        if isinstance(self.image_encoder, Peft_ViT):
-            return self.image_encoder(image, tuner, head, attack_supervise)
+        if use_tecoa:
+            if text_feature == None:
+                raise RuntimeError("if use tecoa text feature can not be none!")
+            if head is not None:
+                raise RuntimeError("if use tecoa head should be none!")
+            if isinstance(self.image_encoder, Peft_ViT):
+                return self.image_encoder(image, tuner, head, attack_supervise, text_feature)
+            else:
+                return self.image_encoder(image, tuner, head)
         else:
-            return self.image_encoder(image, tuner, head)
+            if isinstance(self.image_encoder, Peft_ViT):
+                return self.image_encoder(image, tuner, head, attack_supervise)
+            else:
+                return self.image_encoder(image, tuner, head)
+
 
 
 class PeftModelFromViT(nn.Module):

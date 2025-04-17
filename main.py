@@ -18,6 +18,8 @@ def main(args):
     cfg.merge_from_file(cfg_data_file)
     cfg.merge_from_file(cfg_model_file)
     cfg.merge_from_list(args.opts)
+    cfg.eps = cfg.eps / 255
+    cfg.step_size = cfg.step_size / 255
     # cfg.freeze()
 
     if cfg.output_dir is None:

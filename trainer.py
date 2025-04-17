@@ -27,6 +27,8 @@ from utils.samplers import DownSampler
 from utils.losses import *
 from utils.evaluator import *
 from utils.templates import ZEROSHOT_TEMPLATES
+from utils.scheduler import CosineWarmupScheduler
+from utils.attacks import pgd
 from utils.visualizer import PGDVisualizer
 from models.routing import Routing
 
@@ -91,6 +93,15 @@ class Trainer:
         self.routing = Routing(cfg, self.model, 1)
         self.routing.to(self.device)
 
+    def normalize(self, X):
+        return (X - self.mean) / self.std
+
+    def clip_img_preprocessing(self, X):
+        img_size = 224
+        X = F.interpolate(X, size=(img_size, img_size), mode='bicubic')
+        X = self.normalize(X)
+        return X
+
     def build_data_loader(self):
         cfg = self.cfg
         root = cfg.root
@@ -105,12 +116,14 @@ class Trainer:
             std = [0.5, 0.5, 0.5]
         print("mean:", mean)
         print("std:", std)
+        self.mean = torch.tensor(mean).view(3, 1, 1).cuda()
+        self.std = torch.tensor(std).view(3, 1, 1).cuda()
 
         transform_train = transforms.Compose([
             transforms.RandomResizedCrop(resolution, interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(mean, std),
+            # transforms.Normalize(mean, std),
         ])
 
         transform_plain = transforms.Compose([
@@ -150,7 +163,7 @@ class Trainer:
                 transforms.Resize(resolution * 8 // 7),
                 transforms.CenterCrop(resolution),
                 transforms.Lambda(lambda crop: torch.stack([transforms.ToTensor()(crop)])),
-                transforms.Normalize(mean, std),
+                # transforms.Normalize(mean, std),
             ])
 
         train_dataset = getattr(datasets, cfg.dataset)(root, train=True, transform=transform_train)
@@ -286,7 +299,7 @@ class Trainer:
         self.optim = torch.optim.SGD([{"params": self.tuner.parameters()},
                                       {"params": self.head.parameters()}],
                                       lr=cfg.lr, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
-        self.sched = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, cfg.num_epochs)
+        self.sched = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, cfg.num_epochs / 2)
         self.scaler = GradScaler() if cfg.prec == "amp" else None
 
     def build_criterion(self):
@@ -353,10 +366,13 @@ class Trainer:
             prompts = self.get_tokenized_prompts(classnames, template)
             text_features = self.model.encode_text(prompts)
             text_features = F.normalize(text_features, dim=-1)
+            self.text_feature = text_features
+            # print(f"the size of text feature is {text_features.shape}")
 
         if cfg.backbone.startswith("CLIP-ViT"):
             text_features = text_features @ self.model.image_encoder.proj.t()
             text_features = F.normalize(text_features, dim=-1)
+            # print(f"the size of CLIP text feature is {text_features.shape}")
 
         self.head.apply_weight(text_features)
 
@@ -451,6 +467,18 @@ class Trainer:
             end = time.time()
 
             num_batches = len(self.train_loader)
+
+            if epoch_idx == 10 and not cfg.train_PGDAT:
+                cfg.train_PGDAT = True
+                total_steps = num_batches * cfg.num_epochs / 2
+                print("Begin adversarial training")
+                print(f"Reset lr to {cfg.lr / 100}, warmup steps are {cfg.warmup}, total steps are {total_steps}")
+                self.optim = torch.optim.SGD([{"params": self.tuner.parameters()},
+                                      {"params": self.head.parameters()}],
+                                      lr=cfg.lr / 100, weight_decay=cfg.weight_decay, momentum=cfg.momentum)
+                self.sched = CosineWarmupScheduler(self.optim, cfg.lr / 100, cfg.warmup, total_steps)
+                self.scaler = GradScaler() if cfg.prec == "amp" else None
+
             for batch_idx, batch in enumerate(self.train_loader):
                 data_time.update(time.time() - end)
 
@@ -459,6 +487,7 @@ class Trainer:
                 image = image.to(self.device)
                 label = label.to(self.device)
                 if not cfg.train_PGDAT:
+                    image = self.clip_img_preprocessing(image)
                     if cfg.prec == "amp":
                         with autocast():
                             output = self.model(image)
@@ -479,24 +508,24 @@ class Trainer:
                             self.optim.zero_grad()
                 else:
                     # 划分 clean 和 adv 样本
-                    batch_size = image.size(0)
-                    attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例
-                    clean_size = batch_size - attack_size
+                    # batch_size = image.size(0)
+                    # attack_size = int(batch_size * cfg.attack_ratio)  # attack_ratio 为攻击比例
+                    # clean_size = batch_size - attack_size
 
                     # 随机选择攻击样本的索引
-                    indices = torch.randperm(batch_size)
-                    adv_indices = indices[:attack_size]
-                    clean_indices = indices[attack_size:]
+                    # indices = torch.randperm(batch_size)
+                    # adv_indices = indices[:attack_size]
+                    # clean_indices = indices[attack_size:]
 
                     # 初始化 adv_image，默认和原始 image 相同
                     adv_image = image.clone()
-
-                    adv_image[adv_indices] = self.train_attack(image[adv_indices], label[adv_indices])
+                    perturbation = pgd(self.model, image, label, text_feature=self.text_feature, eps=cfg.eps, stepsize=cfg.step_size, random_start=True)
+                    adv_image = self.clip_img_preprocessing(adv_image + perturbation)
 
                     # Mixup参数设置
-                    mix_alpha = cfg.mix_alpha  # 例如1.0
-                    mix_num = int(clean_size / 2)  # 选择Mixup的样本数量
-
+                    # mix_alpha = cfg.mix_alpha  # 例如1.0
+                    # mix_num = int(clean_size / 2)  # 选择Mixup的样本数量
+                    """""
                     if mix_alpha > 0 and mix_num > 0:
                         # 从clean和adv中各随机选择mix_num个样本
                         mix_clean_idx = torch.randperm(clean_size)[:mix_num]
@@ -533,16 +562,16 @@ class Trainer:
                         remaining_adv = adv_indices
                         clean_mix_loss = 0.0
                         adv_mix_loss = 0.0
-
+                    """""
                     if cfg.prec == "amp":
                         with autocast():
                             # 分别计算 clean 和 adv 样本的输出和 loss
-                            clean_output = self.model(adv_image[remaining_clean], attack_supervise="clean")
-                            adv_output = self.model(adv_image[remaining_adv], attack_supervise="adv")
-                            clean_loss = self.criterion(clean_output, label[remaining_clean]) + clean_mix_loss
-                            adv_loss = self.criterion(adv_output, label[remaining_adv]) + adv_mix_loss
+                            # clean_output = self.model(adv_image[remaining_clean], attack_supervise="clean")
+                            output = self.model(adv_image, attack_supervise="adv")
+                            # clean_loss = self.criterion(clean_output, label[remaining_clean]) + clean_mix_loss
+                            adv_loss = self.criterion(output, label) # + adv_mix_loss
                             # 总 loss
-                            loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
+                            loss = adv_loss
                             loss_micro = loss / self.accum_step
                             self.scaler.scale(loss_micro).backward()
                         if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
@@ -550,11 +579,11 @@ class Trainer:
                             self.scaler.update()
                             self.optim.zero_grad()
                     else:
-                        clean_output = self.model(adv_image[remaining_clean], attack_supervise="clean")
-                        adv_output = self.model(adv_image[remaining_adv], attack_supervise="adv")        
-                        clean_loss = self.criterion(clean_output, label[remaining_clean]) + clean_mix_loss
-                        adv_loss = self.criterion(adv_output, label[remaining_adv]) + adv_mix_loss
-                        loss = (clean_loss * clean_size + adv_loss * attack_size) / batch_size
+                        # clean_output = self.model(adv_image[remaining_clean], attack_supervise="clean")
+                        output = self.model(adv_image, attack_supervise="adv")        
+                        # clean_loss = self.criterion(clean_output, label[remaining_clean]) + clean_mix_loss
+                        adv_loss = self.criterion([output, label]) # + adv_mix_loss
+                        loss = adv_loss
                         loss_micro = loss / self.accum_step
                         loss_micro.backward()
                         if ((batch_idx + 1) % self.accum_step == 0) or (batch_idx + 1 == num_batches):
@@ -562,9 +591,10 @@ class Trainer:
                             self.optim.zero_grad()
 
                 with torch.no_grad():
-                    if not cfg.train_PGDAT:
-                        pred = output.argmax(dim=1)
-                        correct = pred.eq(label).float()
+                    # if not cfg.train_PGDAT:
+                    pred = output.argmax(dim=1)
+                    correct = pred.eq(label).float()
+                    """""
                     else:
                         # 初始化总预测结果和总标签
                         all_pred = []
@@ -591,6 +621,7 @@ class Trainer:
                         pred = torch.cat(all_pred, dim=0)
                         true_label = torch.cat(all_label, dim=0)
                         correct = pred.eq(true_label).float()
+                    """""
                     acc = correct.mean().mul_(100.0)
 
                 current_lr = self.optim.param_groups[0]["lr"]
@@ -624,7 +655,8 @@ class Trainer:
                     info += [f"time {batch_time.val:.3f} ({batch_time.avg:.3f})"]
                     info += [f"data {data_time.val:.3f} ({data_time.avg:.3f})"]
                     info += [f"loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})"]
-                    info += [f"clean_loss {clean_loss.item():.4f} adv_loss {adv_loss.item():.4f}"]
+                    #if cfg.train_PGDAT:
+                    #    info += [f"clean_loss {clean_loss.item():.4f} adv_loss {adv_loss.item():.4f}"]
                     info += [f"acc {acc_meter.val:.4f} ({acc_meter.avg:.4f})"]
                     info += [f"(mean {mean_acc:.4f} many {many_acc:.4f} med {med_acc:.4f} few {few_acc:.4f})"]
                     info += [f"lr {current_lr:.4e}"]
@@ -635,8 +667,9 @@ class Trainer:
                 self._writer.add_scalar("train/lr", current_lr, n_iter)
                 self._writer.add_scalar("train/loss.val", loss_meter.val, n_iter)
                 self._writer.add_scalar("train/loss.avg", loss_meter.avg, n_iter)
-                self._writer.add_scalar("train/loss.clean", clean_loss.item(), n_iter)
-                self._writer.add_scalar("train/loss.adv", adv_loss.item(), n_iter)
+                #if cfg.train_PGDAT:
+                #    self._writer.add_scalar("train/loss.clean", clean_loss.item(), n_iter)
+                #    self._writer.add_scalar("train/loss.adv", adv_loss.item(), n_iter)
                 self._writer.add_scalar("train/acc.val", acc_meter.val, n_iter)
                 self._writer.add_scalar("train/acc.avg", acc_meter.avg, n_iter)
                 self._writer.add_scalar("train/mean_acc", mean_acc, n_iter)
@@ -645,8 +678,11 @@ class Trainer:
                 self._writer.add_scalar("train/few_acc", few_acc, n_iter)
                 
                 end = time.time()
+                if cfg.train_PGDAT:
+                    self.sched.step()
 
-            self.sched.step()
+            if not cfg.train_PGDAT:
+                self.sched.step()
             torch.cuda.empty_cache()
 
             if cfg.evaluate_interval:
@@ -975,7 +1011,7 @@ class Trainer:
     def create_attack(self, model, num_classes):
         cfg = self.cfg
         attack_map = {
-            'pgd': lambda: torchattacks.PGD(model, random_start=True, steps=10),
+            'pgd': lambda: torchattacks.PGD(model, random_start=True, steps=10, eps=cfg.eps, alpha=cfg.step_size),
             'fgsm': lambda: torchattacks.FGSM(model),
             'auto_attack': lambda: torchattacks.AutoAttack(model, n_classes=num_classes)
         }
