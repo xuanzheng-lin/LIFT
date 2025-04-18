@@ -376,6 +376,45 @@ class Trainer:
 
         self.head.apply_weight(text_features)
 
+
+    @torch.no_grad()
+    def init_text_feature_for_test(self):
+        cfg = self.cfg
+        classnames = self.classnames
+
+        print("Initialize text features")
+        if cfg.prompt == "ensemble":
+            all_text_features = []
+            for template in tqdm(ZEROSHOT_TEMPLATES['imagenet']):
+                prompts = self.get_tokenized_prompts(classnames, template)
+                text_features = self.model.encode_text(prompts)
+                text_features = F.normalize(text_features, dim=-1)
+                all_text_features.append(text_features)
+            all_text_features = torch.stack(all_text_features)
+            text_features = all_text_features.mean(dim=0)
+        elif cfg.prompt == "descriptor":
+            with open("utils/descriptors_imagenet.json") as f:
+                descriptors = json.load(f)
+            template = "{}"
+            all_class_features = []
+            for cn in tqdm(classnames):
+                prompts = self.get_tokenized_prompts(descriptors[cn], template)
+                text_features = self.model.encode_text(prompts)
+                text_features = F.normalize(text_features, dim=-1)
+                all_class_features.append(text_features.mean(dim=0))
+            text_features = torch.stack(all_class_features)
+        elif cfg.prompt == "classname":
+            template = "{}"
+            prompts = self.get_tokenized_prompts(classnames, template)
+            text_features = self.model.encode_text(prompts)
+            text_features = F.normalize(text_features, dim=-1)
+        elif cfg.prompt == "default":
+            template = "a photo of a {}."
+            prompts = self.get_tokenized_prompts(classnames, template)
+            text_features = self.model.encode_text(prompts)
+            text_features = F.normalize(text_features, dim=-1)
+            self.text_feature = text_features
+
     @torch.no_grad()
     def init_head_class_mean(self):
         print("Initialize head with class means")
@@ -471,6 +510,8 @@ class Trainer:
             if epoch_idx == 10 and not cfg.train_PGDAT:
                 cfg.train_PGDAT = True
                 total_steps = num_batches * cfg.num_epochs / 2
+                print("finish clean sample finetuning")
+                self.save_model(cfg.output_dir)
                 print("Begin adversarial training")
                 print(f"Reset lr to {cfg.lr / 100}, warmup steps are {cfg.warmup}, total steps are {total_steps}")
                 self.optim = torch.optim.SGD([{"params": self.tuner.parameters()},
@@ -1042,6 +1083,8 @@ class Trainer:
             print(f"Evaluate on the test set")
             data_loader = self.test_loader
 
+        self.init_text_feature_for_test()
+
         if cfg.test_attack:
             self.test_attack = self.create_attack(self.model, self.num_classes)
 
@@ -1061,7 +1104,8 @@ class Trainer:
                 if cfg.test_attack:
                     adv_image = image.clone()
                     # with torch.no_grad():
-                    adv_image = self.test_attack(image, label.repeat_interleave(_ncrops))
+                    perturbation = pgd(self.model, image, label.repeat_interleave(_ncrops), text_feature=self.text_feature, eps=cfg.eps, stepsize=cfg.step_size)
+                    adv_image = self.clip_img_preprocessing(adv_image + perturbation)
 
                     if cfg.use_routing:
                         original_indices = torch.arange(adv_image.size(0), device=self.device)
@@ -1092,6 +1136,7 @@ class Trainer:
                 output = output.view(_bsz, _ncrops, -1).mean(dim=1)
             else:
                 # CUDA out of memory
+                print("_ncrops over 5")
                 output = []
                 image = image.view(_bsz, _ncrops, _c, _h, _w)
                 for k in range(_ncrops):
